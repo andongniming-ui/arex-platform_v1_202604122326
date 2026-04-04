@@ -67,11 +67,16 @@ async def push_config(app_id: str, db: AsyncSession = Depends(get_db)):
     app = await _get_app_with_config(app_id, db)
     if not app.repeater_config:
         raise HTTPException(400, "No config to push; create config first")
-    # Build arex.agent.conf and push to target server
+    # Build arex.agent.conf content
     arex_storage_url = settings.arex_storage_url
     host, port = parse_arex_storage_url(arex_storage_url)
     conf_content = build_arex_conf(app, host, port)
-    remote_conf_path = "~/arex-agent/arex.agent.conf"
+    # Expand ~ to absolute home dir via SSH (SFTP does not expand ~)
+    _, home_out, _ = await asyncio.to_thread(
+        ssh_executor.run_command, app, "echo $HOME"
+    )
+    home = home_out.strip() or "/home/" + app.ssh_user
+    remote_conf_path = f"{home}/arex-agent/arex.agent.conf"
     await asyncio.to_thread(
         ssh_executor.push_content, app, conf_content, remote_conf_path
     )
@@ -81,8 +86,13 @@ async def push_config(app_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/configs/{app_id}/default", response_model=dict)
-async def get_default_config(app_id: str):
-    return {"config": get_default_conf_preview()}
+async def get_default_config(app_id: str, db: AsyncSession = Depends(get_db)):
+    """Return a preview of the arex.agent.conf that would be generated for this app."""
+    app = await db.get(Application, app_id)
+    if not app:
+        raise HTTPException(404, "Application not found")
+    host, port = parse_arex_storage_url(settings.arex_storage_url)
+    return {"config": build_arex_conf(app, host, port)}
 
 
 # ── Sessions ──────────────────────────────────────────────────────────────────

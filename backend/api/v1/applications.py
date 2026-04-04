@@ -155,72 +155,87 @@ async def discover_pid(app_id: str, db: AsyncSession = Depends(get_db)):
 @router.post("/{app_id}/agent/attach", response_model=dict)
 async def attach_agent(app_id: str, db: AsyncSession = Depends(get_db)):
     """
-    Attach JVM-Sandbox Repeater agent to the target JVM.
-    Steps: discover PID → push sandbox + config → run attach command.
+    Deploy arex-agent to the target host and inject -javaagent into startup script.
+    Steps:
+      1. Upload arex-agent.jar via SFTP
+      2. Inject -javaagent param into ~/start.sh (or startup.sh)
+      3. Mark status as ATTACHED — restart the target service to activate recording
     """
     app = await db.get(Application, app_id)
     if not app:
         raise HTTPException(404, "Application not found")
 
-    # 1. Discover PID
+    # 1. Upload arex-agent.jar to target host
+    local_jar = settings.arex_agent_jar_path
+    try:
+        await asyncio.to_thread(ssh_executor.upload_arex_agent, app, local_jar)
+    except Exception as e:
+        raise HTTPException(500, f"Upload arex-agent.jar failed: {e}")
+
+    # 2. Resolve remote home dir to get absolute agent path
+    _, home_out, _ = await asyncio.to_thread(
+        ssh_executor.run_command, app, "echo $HOME"
+    )
+    agent_remote_path = f"{home_out.strip()}/arex-agent/arex-agent.jar"
+
+    # 3. Inject -javaagent into startup script
+    inject_result = await asyncio.to_thread(
+        ssh_executor.inject_javaagent_param, app, settings.arex_storage_url, agent_remote_path
+    )
+    if inject_result.startswith("NOT_FOUND"):
+        raise HTTPException(
+            400,
+            f"arex-agent.jar uploaded but no startup script found. "
+            f"Add -javaagent:{agent_remote_path} "
+            f"-Darex.service.name={app.name} "
+            f"-Darex.storage.service.host=<storage-host>:8080 manually, then restart."
+        )
+
+    # 4. Discover PID (informational only)
     pid = await asyncio.to_thread(ssh_executor.discover_pid, app)
-    if not pid:
-        raise HTTPException(400, "Could not discover JVM PID. Check java_jar_name setting.")
-    app.java_pid = pid
+    if pid:
+        app.java_pid = pid
 
-    # 2. Run sandbox attach script on remote host
-    attach_cmd = (
-        f"source /etc/profile; "
-        f"cd {app.sandbox_home}/bin && "
-        f"bash sandbox.sh -p {pid} -P {app.sandbox_port}"
-    )
-    exit_code, stdout, stderr = await asyncio.to_thread(
-        ssh_executor.run_command, app, attach_cmd, 30
-    )
-
-    if exit_code != 0:
-        app.agent_status = "ERROR"
-        await db.commit()
-        raise HTTPException(500, f"Attach failed: {stderr}")
-
-    # 3. Mark as ATTACHED (recording is handled by the built-in Spring Boot filter,
-    #    not the JVM-Sandbox management port, so no HTTP liveness check needed)
     app.agent_status = "ATTACHED"
     app.last_heartbeat = datetime.utcnow()
     app.updated_at = datetime.utcnow()
     await db.commit()
 
-    return {"agent_status": "ATTACHED", "pid": pid, "stdout": stdout}
+    note = "already injected" if inject_result == "ALREADY_INJECTED" else inject_result
+    return {
+        "agent_status": "ATTACHED",
+        "pid": pid,
+        "note": note,
+        "next_step": "Restart the target service to activate AREX recording",
+    }
 
 
 @router.post("/{app_id}/agent/detach", response_model=dict)
 async def detach_agent(app_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    Remove -javaagent param from the target startup script.
+    Restart the target service to stop recording.
+    """
     app = await db.get(Application, app_id)
     if not app:
         raise HTTPException(404, "Application not found")
 
-    if not app.java_pid:
-        raise HTTPException(400, "No known PID; agent may not be attached")
-
-    detach_cmd = (
-        f"source /etc/profile; "
-        f"cd {app.sandbox_home}/bin && "
-        f"bash sandbox.sh -p {app.java_pid} -P {app.sandbox_port} -S"
+    # Remove -javaagent line injected by attach
+    remove_cmd = (
+        r"find ~ -maxdepth 3 \( -name 'start.sh' -o -name 'startup.sh' \) 2>/dev/null | head -1 | "
+        r"xargs -I{} sed -i 's/ -javaagent:[^ ]* -Darex\.[^ ]* -Darex\.[^ ]*//g' {}"
     )
     exit_code, stdout, stderr = await asyncio.to_thread(
-        ssh_executor.run_command, app, detach_cmd, 15
+        ssh_executor.run_command, app, remove_cmd, 15
     )
-
-    if exit_code != 0:
-        app.agent_status = "ERROR"
-        app.updated_at = datetime.utcnow()
-        await db.commit()
-        raise HTTPException(500, f"Detach failed: {stderr}")
 
     app.agent_status = "DETACHED"
     app.updated_at = datetime.utcnow()
     await db.commit()
-    return {"agent_status": "DETACHED", "stdout": stdout}
+    return {
+        "agent_status": "DETACHED",
+        "next_step": "Restart the target service to stop AREX recording",
+    }
 
 
 @router.get("/{app_id}/agent/status", response_model=dict)
