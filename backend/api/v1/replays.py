@@ -13,7 +13,9 @@ from models.test_case import TestCase, TestCaseRecording
 from models.recording import Recording
 from models.application import Application
 from schemas.replay import ReplayJobCreate, ReplayJobOut, ReplayResultOut, ResultSummary
-from integration import repeater_client
+import httpx
+from integration.arex_client import ArexClient, ArexClientError
+from config import settings
 from utils.diff import compute_diff
 from utils.assertions import evaluate_assertions, assertions_all_passed
 from utils.failure_analyzer import analyze_failure
@@ -38,25 +40,6 @@ def _extract_service_id(text: str | None) -> str | None:
     return m.group(1).strip() if m else None
 
 
-def _strip_hessian_prefix(text: str | None) -> str | None:
-    """
-    Strip residual Hessian encoding artifacts from stored response/request bodies.
-    The most common artifact is a leading 'S' character (Hessian 0x53 full-string tag)
-    followed by two length bytes that were not cleaned up during recording collection.
-    Example: 'S\x00\xff<?xml ...' → '<?xml ...'
-    """
-    if not text:
-        return text
-    # The Hessian 'S' tag leaves 'S' as the first visible character when the two
-    # length bytes happen to be control/invisible characters. Detect by checking
-    # whether stripping the first 1-3 characters reveals a valid XML/JSON start.
-    if text[0] == 'S':
-        for skip in (3, 2, 1):
-            candidate = text[skip:].lstrip()
-            if candidate and candidate[0] in ('<', '{', '[', '"'):
-                return candidate
-    return text
-
 
 def _match_xml_template(xml_tpl: str, response_body: str | None, request_body: str | None = None) -> str | None:
     """
@@ -75,7 +58,7 @@ def _match_xml_template(xml_tpl: str, response_body: str | None, request_body: s
     # Prefer service_id from recorded request body, fall back to response body
     # (the response always echoes the same service_id as the request for this XML API)
     service_id = (_extract_service_id(request_body)
-                  or _extract_service_id(_strip_hessian_prefix(response_body)))
+                  or _extract_service_id(response_body))
 
     # Try JSON map first
     try:
@@ -869,7 +852,7 @@ async def _replay_one(
                 error_msg = "Recording not found in DB"
                 raise ValueError(error_msg)
 
-            original_response = _strip_hessian_prefix(recording.response_body)
+            original_response = recording.response_body
 
             req_info: dict = {}
             if recording.request_body:
@@ -925,31 +908,50 @@ async def _replay_one(
                     # are intercepted and served from the recorded responses.
                     # Fall back to direct HTTP if the agent call fails.
                     if use_sub_invocation_mocks and recording.trace_id and recording.sub_invocations:
-                        replay_resp = await repeater_client.replay_with_mock(
-                            app=target_app,
-                            recording_trace_id=recording.trace_id,
-                            recording_entry_app=recording.entry_app,
-                            override_host=override_host,
-                        )
-                        if not replay_resp.get("success"):
-                            # Agent couldn't replay — fall back to direct HTTP
-                            replay_resp = await repeater_client.direct_http_replay(
-                                app=target_app,
-                                path=replay_path,
-                                method=method,
-                                headers=headers,
-                                body=send_body,
-                                override_host=override_host,
-                            )
+                        # AREX mock replay: preload sub-invocation mocks into Redis, then HTTP with arex-record-id header
+                        arex = ArexClient(settings.arex_storage_url)
+                        try:
+                            await arex.cache_load_mock(recording.trace_id)
+                        except ArexClientError as e:
+                            print(f"[replay] cache_load_mock failed (non-fatal): {e}")
+
+                        # Inject arex-record-id header so arex-agent mocks sub-calls
+                        mock_headers = dict(headers)
+                        mock_headers["arex-record-id"] = recording.trace_id
+
+                        # Determine target host
+                        host = override_host or f"http://{target_app.ssh_host}:{target_app.sandbox_port}"
+                        url = host.rstrip("/") + replay_path
+                        try:
+                            async with httpx.AsyncClient(timeout=30.0) as client:
+                                resp = await client.request(method, url, content=send_body, headers=mock_headers)
+                            replay_resp = {
+                                "body": resp.text,
+                                "status_code": resp.status_code,
+                                "error": None,
+                            }
+                        except httpx.RequestError as e:
+                            replay_resp = {"body": None, "status_code": None, "error": str(e)}
+
+                        # Clean up Redis cache
+                        try:
+                            await arex.cache_remove_mock(recording.trace_id)
+                        except ArexClientError:
+                            pass  # Non-fatal cleanup failure
                     else:
-                        replay_resp = await repeater_client.direct_http_replay(
-                            app=target_app,
-                            path=replay_path,
-                            method=method,
-                            headers=headers,
-                            body=send_body,
-                            override_host=override_host,
-                        )
+                        # Direct HTTP replay (no mocking)
+                        host = override_host or f"http://{target_app.ssh_host}:{target_app.sandbox_port}"
+                        url = host.rstrip("/") + replay_path
+                        try:
+                            async with httpx.AsyncClient(timeout=30.0) as client:
+                                resp = await client.request(method, url, content=send_body, headers=headers)
+                            replay_resp = {
+                                "body": resp.text,
+                                "status_code": resp.status_code,
+                                "error": None,
+                            }
+                        except httpx.RequestError as e:
+                            replay_resp = {"body": None, "status_code": None, "error": str(e)}
 
                     replayed_body = replay_resp.get("body")
                     replayed_status_code = replay_resp.get("status_code")
