@@ -12,6 +12,7 @@ services:
       - AP_DEBUG=true
       - AP_DB_URL=sqlite+aiosqlite:////app/data/arex_platform.db
       - AP_AREX_STORAGE_URL=http://arex-storage:8080
+      - AP_AREX_AGENT_STORAGE_URL=http://172.25.109.28:8093
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     depends_on:
       - arex-storage

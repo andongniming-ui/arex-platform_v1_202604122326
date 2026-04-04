@@ -67,8 +67,8 @@ async def push_config(app_id: str, db: AsyncSession = Depends(get_db)):
     app = await _get_app_with_config(app_id, db)
     if not app.repeater_config:
         raise HTTPException(400, "No config to push; create config first")
-    # Build arex.agent.conf content
-    arex_storage_url = settings.arex_storage_url
+    # Build arex.agent.conf content — use agent-facing URL if configured
+    arex_storage_url = settings.arex_agent_storage_url or settings.arex_storage_url
     host, port = parse_arex_storage_url(arex_storage_url)
     conf_content = build_arex_conf(app, host, port)
     # Expand ~ to absolute home dir via SSH (SFTP does not expand ~)
@@ -91,7 +91,8 @@ async def get_default_config(app_id: str, db: AsyncSession = Depends(get_db)):
     app = await db.get(Application, app_id)
     if not app:
         raise HTTPException(404, "Application not found")
-    host, port = parse_arex_storage_url(settings.arex_storage_url)
+    agent_url = settings.arex_agent_storage_url or settings.arex_storage_url
+    host, port = parse_arex_storage_url(agent_url)
     return {"config": build_arex_conf(app, host, port)}
 
 
