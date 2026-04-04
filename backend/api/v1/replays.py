@@ -897,30 +897,29 @@ async def _replay_one(
             # P1: 失败重试逻辑
             final_status = None
             last_error = None
+            arex = ArexClient(settings.arex_storage_url)
+            if use_sub_invocation_mocks and recording.trace_id and recording.sub_invocations:
+                try:
+                    await arex.cache_load_mock(recording.trace_id)
+                except ArexClientError as e:
+                    print(f"[replay] cache_load_mock failed (non-fatal): {e}")
             for attempt in range(max(1, retry_count + 1)):  # 至少执行1次
                 if attempt > 0:
                     # 重试前等待一小段时间
                     await asyncio.sleep(0.5 * attempt)
-                
+
                 try:
                     # When mock mode is on AND the recording has a trace_id + sub_invocations,
                     # route through the Repeater agent so downstream calls (DB/RPC/Redis)
                     # are intercepted and served from the recorded responses.
                     # Fall back to direct HTTP if the agent call fails.
                     if use_sub_invocation_mocks and recording.trace_id and recording.sub_invocations:
-                        # AREX mock replay: preload sub-invocation mocks into Redis, then HTTP with arex-record-id header
-                        arex = ArexClient(settings.arex_storage_url)
-                        try:
-                            await arex.cache_load_mock(recording.trace_id)
-                        except ArexClientError as e:
-                            print(f"[replay] cache_load_mock failed (non-fatal): {e}")
-
                         # Inject arex-record-id header so arex-agent mocks sub-calls
                         mock_headers = dict(headers)
                         mock_headers["arex-record-id"] = recording.trace_id
 
                         # Determine target host
-                        host = override_host or f"http://{target_app.ssh_host}:{target_app.sandbox_port}"
+                        host = override_host or f"http://{target_app.ssh_host}:{target_app.repeater_port}"
                         url = host.rstrip("/") + replay_path
                         try:
                             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -940,7 +939,7 @@ async def _replay_one(
                             pass  # Non-fatal cleanup failure
                     else:
                         # Direct HTTP replay (no mocking)
-                        host = override_host or f"http://{target_app.ssh_host}:{target_app.sandbox_port}"
+                        host = override_host or f"http://{target_app.ssh_host}:{target_app.repeater_port}"
                         url = host.rstrip("/") + replay_path
                         try:
                             async with httpx.AsyncClient(timeout=30.0) as client:

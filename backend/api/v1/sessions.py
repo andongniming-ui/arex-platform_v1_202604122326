@@ -47,7 +47,6 @@ async def get_config(app_id: str, db: AsyncSession = Depends(get_db)):
 async def upsert_config(
     app_id: str, body: RepeaterConfigCreate, db: AsyncSession = Depends(get_db)
 ):
-    import json as _json
     app = await _get_app_with_config(app_id, db)
 
     if app.repeater_config:
@@ -270,13 +269,11 @@ async def _collect_recordings(session_id: str):
                 target_resp = mocker.get("targetResponse") or {}
 
                 # Store as JSON strings
-                import json as _json
                 request_body = _json.dumps(target_req) if isinstance(target_req, dict) else str(target_req)
                 response_body = _json.dumps(target_resp) if isinstance(target_resp, dict) else str(target_resp)
 
                 # Apply desensitization
                 if desensitize_rules:
-                    from utils.desensitize import desensitize_body
                     request_body = desensitize_body(request_body, desensitize_rules)
                     response_body = desensitize_body(response_body, desensitize_rules)
 
@@ -526,7 +523,6 @@ async def batch_delete_recordings(body: dict, db: AsyncSession = Depends(get_db)
 @router.post("/recordings/{recording_id}/recapture", response_model=RecordingOut)
 async def recapture_response(recording_id: str, db: AsyncSession = Depends(get_db)):
     """Re-send the recorded request to the app and update response_body as baseline."""
-    import json as _json
     import httpx
     rec = await db.get(Recording, recording_id)
     if not rec:
