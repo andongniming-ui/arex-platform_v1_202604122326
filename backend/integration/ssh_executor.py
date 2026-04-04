@@ -147,9 +147,7 @@ def upload_arex_agent(app: Application, local_agent_jar_path: str) -> None:
     The remote directory is created if it does not exist.
     """
     remote_path = "~/arex-agent/arex-agent.jar"
-    # Expand ~ via SSH so we use the absolute path understood by SFTP
-    _, stdout, _ = _build_client(app).exec_command("echo $HOME")
-    # We need a separate connection here; use run_command instead
+    # Expand ~ via SSH to get absolute path for SFTP
     _, home_out, _ = run_command(app, "echo $HOME")
     home = home_out.strip()
     remote_abs = f"{home}/arex-agent/arex-agent.jar"
