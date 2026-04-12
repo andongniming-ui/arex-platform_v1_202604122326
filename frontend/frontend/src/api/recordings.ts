@@ -36,12 +36,32 @@ export interface Recording {
 export const sessionApi = {
   list: (app_id?: string, limit = 20, offset = 0) =>
     client.get<PagedResult<Session>>('/sessions', { params: { app_id, limit, offset } }),
+  search: (params?: {
+    app_id?: string
+    name?: string
+    status?: string
+    started_after?: string
+    started_before?: string
+    limit?: number
+    offset?: number
+    sort_by?: string
+    sort_order?: string
+  }) => client.get<PagedResult<Session>>('/sessions', { params }),
   get: (id: string) => client.get<Session>(`/sessions/${id}`),
   create: (data: { app_id: string; name?: string; description?: string; created_by?: string }) =>
     client.post<Session>('/sessions', data),
   stop: (id: string) => client.put<{ status: string }>(`/sessions/${id}/stop`),
   delete: (id: string) => client.delete(`/sessions/${id}`),
   batchDelete: (ids: string[]) => client.delete('/sessions/batch', { data: { ids } }),
+  directRecord: (id: string, payload: {
+    method?: string
+    url: string
+    headers?: Record<string, string>
+    body?: string
+    operation?: string
+  }) => client.post<{ recording_id: string; status_code: number; duration_ms: number; response: string }>(
+    `/sessions/${id}/direct-record`, payload
+  ),
 }
 
 export const recordingApi = {
@@ -49,11 +69,14 @@ export const recordingApi = {
     session_id?: string
     app_id?: string
     entry_type?: string
+    status?: string
     path_contains?: string
     created_after?: string
     created_before?: string
     limit?: number
     offset?: number
+    sort_by?: string
+    sort_order?: string
   }) => client.get<PagedResult<Recording>>('/recordings', { params }),
   get: (id: string) => client.get<Recording>(`/recordings/${id}`),
   delete: (id: string) => client.delete(`/recordings/${id}`),
