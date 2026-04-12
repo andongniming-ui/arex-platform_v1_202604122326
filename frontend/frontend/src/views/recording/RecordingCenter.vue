@@ -442,7 +442,7 @@ const sessionColumns = computed(() => [
     key: 'started_at',
     width: 170,
     sorter: true,
-    sortOrder: sessionSortState.value.columnKey === 'started_at' ? sessionSortState.value.order : false,
+    sortOrder: sessionSortState.value.columnKey === 'started_at' ? sessionSortState.value.order : false as false,
     render: (r: Session) => fmtTime(r.started_at),
   },
   {
@@ -704,7 +704,7 @@ const columns = computed(() => [
     key: 'duration_ms',
     width: 80,
     sorter: true,
-    sortOrder: recordingSortState.value.columnKey === 'duration_ms' ? recordingSortState.value.order : false,
+    sortOrder: recordingSortState.value.columnKey === 'duration_ms' ? recordingSortState.value.order : false as false,
   },
   {
     title: '状态', key: 'status', width: 90,
@@ -716,7 +716,7 @@ const columns = computed(() => [
     key: 'created_at',
     width: 155,
     sorter: true,
-    sortOrder: recordingSortState.value.columnKey === 'created_at' ? recordingSortState.value.order : false,
+    sortOrder: recordingSortState.value.columnKey === 'created_at' ? recordingSortState.value.order : false as false,
     render: (r: Recording) => fmtTime(r.created_at),
   },
   {

@@ -1,0 +1,1 @@
+function a(){return{今天:()=>[new Date().setHours(0,0,0,0),Date.now()],最近3天:()=>[Date.now()-3*864e5,Date.now()],最近7天:()=>[Date.now()-7*864e5,Date.now()],最近30天:()=>[Date.now()-30*864e5,Date.now()]}}function o(n,e){if(!e||!n)return!0;const t=new Date(n).getTime();return Number.isNaN(t)?!1:t>=e[0]&&t<=e[1]}export{a as c,o as i};
