@@ -2,7 +2,7 @@ import asyncio
 import uuid
 import json as _json
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File, Form, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete, func
 from sqlalchemy.orm import selectinload
@@ -16,6 +16,8 @@ from integration.config_manager import build_arex_conf, get_default_conf_preview
 from integration.arex_client import ArexClient, ArexClientError
 from config import settings
 from utils.desensitize import desensitize_body
+from utils.operation_name import extract_operation_name, get_operation_id_tags
+from utils.proxy_recording import has_proxy_recording_header, with_proxy_recording_header
 
 router = APIRouter(tags=["sessions & recordings"])
 
@@ -119,15 +121,36 @@ async def create_session(body: SessionCreate, db: AsyncSession = Depends(get_db)
 @router.get("/sessions", response_model=dict)
 async def list_sessions(
     app_id: str | None = None,
+    name: str | None = None,
+    status: str | None = None,
+    started_after: str | None = None,
+    started_before: str | None = None,
     limit: int = 20,
     offset: int = 0,
+    sort_by: str = "started_at",
+    sort_order: str = "desc",
     db: AsyncSession = Depends(get_db),
 ):
     base = select(RecordingSession)
     if app_id:
         base = base.where(RecordingSession.app_id == app_id)
+    if name:
+        base = base.where(RecordingSession.name.ilike(f"%{name}%"))
+    if status:
+        base = base.where(RecordingSession.status == status)
+    if started_after:
+        from datetime import datetime as _dt
+        base = base.where(RecordingSession.started_at >= _dt.fromisoformat(started_after.replace("Z", "+00:00")))
+    if started_before:
+        from datetime import datetime as _dt
+        base = base.where(RecordingSession.started_at <= _dt.fromisoformat(started_before.replace("Z", "+00:00")))
+    _SESSION_SORT_COLS = {"started_at"}
+    if sort_by not in _SESSION_SORT_COLS:
+        raise HTTPException(400, f"Invalid sort_by '{sort_by}'. Allowed: {_SESSION_SORT_COLS}")
+    _sort_col = getattr(RecordingSession, sort_by)
+    _order_expr = _sort_col.desc() if sort_order == "desc" else _sort_col.asc()
     total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
-    items = (await db.execute(base.order_by(RecordingSession.started_at.desc()).offset(offset).limit(limit))).scalars().all()
+    items = (await db.execute(base.order_by(_order_expr).offset(offset).limit(limit))).scalars().all()
     return {"items": [SessionOut.model_validate(i) for i in items], "total": total}
 
 
@@ -218,9 +241,19 @@ async def stop_session(
 
 
 async def _collect_recordings(session_id: str):
-    """Background task: query arex-storage API and store recordings in DB."""
+    """Background task: query arex-storage API and store recordings in DB.
+
+    The arex-agent 0.4.8 sends recordings in periodic batch windows (≈5–30 s).
+    To avoid the race condition where the batch hasn't flushed when this task
+    runs, we wait a short grace period first.  Real-time capture in arex_proxy
+    already handles most cases; this function adds any recordings that arrived
+    in arex-storage after the session stopped (e.g. late-flushing batches).
+    """
     from database import async_session_factory
     from datetime import timezone as _tz
+
+    # Grace period: give the arex-agent time to flush its batch window to arex-storage.
+    await asyncio.sleep(35)
 
     async with async_session_factory() as db:
         s = await db.get(RecordingSession, session_id)
@@ -229,7 +262,28 @@ async def _collect_recordings(session_id: str):
         app = await db.get(Application, s.app_id)
         if not app:
             return
-        count = 0
+
+        operation_tags = get_operation_id_tags(app)
+
+        # Count recordings already captured in real-time by arex_proxy
+        from sqlalchemy import func as _func
+        already_count_result = await db.execute(
+            select(_func.count()).select_from(Recording).where(
+                Recording.session_id == session_id
+            )
+        )
+        already_count = already_count_result.scalar() or 0
+
+        # Build set of trace_ids already in DB to avoid duplicates
+        existing_trace_result = await db.execute(
+            select(Recording.trace_id).where(
+                Recording.session_id == session_id,
+                Recording.trace_id.isnot(None),
+            )
+        )
+        existing_trace_ids = {row[0] for row in existing_trace_result.fetchall()}
+
+        count = already_count
         try:
             arex_client = ArexClient(settings.arex_storage_url)
             begin_time = s.started_at
@@ -315,6 +369,8 @@ async def _collect_recordings(session_id: str):
                     http_method = (attrs.get("HttpMethod") or "POST").upper()
                     req_path = attrs.get("RequestPath") or "/"
                     hdrs = attrs.get("Headers") or {}
+                    if has_proxy_recording_header(hdrs):
+                        continue
                     content_type = hdrs.get("content-type") or hdrs.get("Content-Type")
                     request_body = _json.dumps({
                         "method": http_method,
@@ -331,6 +387,14 @@ async def _collect_recordings(session_id: str):
                 else:
                     response_body = str(target_resp) if target_resp else ""
 
+                operation_label = (
+                    extract_operation_name(req_body_raw if isinstance(target_req, dict) else request_body, operation_tags)
+                    or extract_operation_name(response_body, operation_tags)
+                    or mocker.get("operationName")
+                    or req_path
+                    or "/"
+                )
+
                 # Apply desensitization
                 if desensitize_rules:
                     request_body = desensitize_body(request_body, desensitize_rules)
@@ -343,16 +407,22 @@ async def _collect_recordings(session_id: str):
                 else:
                     ts = datetime.utcnow()
 
+                # arex-storage 0.6.x uses "id" field as record identifier
+                rec_trace_id = mocker.get("id") or mocker.get("recordId") or str(uuid.uuid4())
+
+                # Skip recordings already captured in real-time by arex_proxy
+                if rec_trace_id in existing_trace_ids:
+                    continue
+
                 rec = Recording(
                     id=str(uuid.uuid4()),
                     session_id=session_id,
                     app_id=s.app_id,
-                    # arex-storage 0.6.x uses "id" field as record identifier
-                    trace_id=mocker.get("id") or mocker.get("recordId") or str(uuid.uuid4()),
+                    trace_id=rec_trace_id,
                     entry_type=entry_type,
                     entry_app=app.name,
                     host=app.ssh_host,
-                    path=mocker.get("operationName") or "/",
+                    path=operation_label,
                     request_body=request_body,
                     response_body=response_body,
                     timestamp=ts,
@@ -360,6 +430,7 @@ async def _collect_recordings(session_id: str):
                 )
                 db.add(rec)
                 count += 1
+                existing_trace_ids.add(rec_trace_id)
 
             s.record_count = count
             s.status = "DONE"
@@ -373,6 +444,260 @@ async def _collect_recordings(session_id: str):
         await db.commit()
 
 
+# ── Direct-record proxy ───────────────────────────────────────────────────────
+
+@router.post("/sessions/{session_id}/direct-record", response_model=dict)
+async def direct_record(
+    session_id: str,
+    request: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Bypass-agent recording: forward a request to the target service and capture
+    the request/response pair as a Recording in this session.
+
+    This is the correct approach for services that use a single HTTP endpoint
+    (e.g. /api/bank/service) with different operations encoded in the request body,
+    because the arex-agent uses URL path as the dedup key and would only keep one
+    recording per batch window regardless of body content.
+
+    Body:
+      method       - HTTP method (default POST)
+      url          - Full target URL, e.g. http://172.25.109.28:8081/api/bank/service
+      headers      - dict of request headers (optional)
+      body         - request body string (optional)
+      operation    - logical operation name to label the recording (optional, auto-detected)
+    """
+    import httpx as _httpx
+
+    s = await db.get(RecordingSession, session_id)
+    if not s:
+        raise HTTPException(404, "Session not found")
+    if s.status != "ACTIVE":
+        raise HTTPException(400, f"Session is {s.status}, not ACTIVE")
+
+    app = await db.get(Application, s.app_id)
+    if not app:
+        raise HTTPException(404, "Application not found")
+
+    method = (request.get("method") or "POST").upper()
+    url = request.get("url") or ""
+    if not url:
+        raise HTTPException(400, "url is required")
+    req_headers = request.get("headers") or {}
+    req_body = request.get("body") or ""
+    operation = request.get("operation") or ""
+
+    if not operation and req_body:
+        operation = extract_operation_name(req_body, get_operation_id_tags(app)) or ""
+
+    from urllib.parse import urlparse as _urlparse
+    _parsed = _urlparse(url)
+    req_path = _parsed.path + ("?" + _parsed.query if _parsed.query else "")
+    operation_label = operation or req_path
+
+    content_type = req_headers.get("Content-Type") or req_headers.get("content-type") or ""
+
+    request_body_obj = _json.dumps({
+        "method": method,
+        "uri": url,
+        "body": req_body or None,
+        "contentType": content_type or None,
+    }, ensure_ascii=False)
+
+    # Forward the request to the target service
+    response_text = ""
+    status_code = 0
+    duration_ms = 0
+    try:
+        import time as _time
+        _t0 = _time.monotonic()
+        async with _httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.request(
+                method=method,
+                url=url,
+                headers={k: v for k, v in req_headers.items()},
+                content=req_body.encode() if req_body else None,
+            )
+        duration_ms = int((_time.monotonic() - _t0) * 1000)
+        response_text = resp.text
+        status_code = resp.status_code
+    except Exception as e:
+        raise HTTPException(502, f"Failed to reach target service: {e}")
+
+    # Persist as a Recording
+    rec = Recording(
+        id=str(uuid.uuid4()),
+        session_id=session_id,
+        app_id=s.app_id,
+        entry_type="HTTP",
+        entry_app=app.name,
+        host=_parsed.netloc,
+        path=operation_label,
+        request_body=request_body_obj,
+        response_body=response_text,
+        duration_ms=duration_ms,
+        timestamp=datetime.utcnow(),
+        status="RAW",
+    )
+    db.add(rec)
+    s.record_count = (s.record_count or 0) + 1
+    await db.commit()
+    await db.refresh(rec)
+
+    return {
+        "recording_id": rec.id,
+        "status_code": status_code,
+        "duration_ms": duration_ms,
+        "response": response_text,
+    }
+
+
+# ── Transparent recording proxy ──────────────────────────────────────────────
+# Usage: point your test tool at
+#   http://<platform>:8001/api/v1/proxy/<app_name>/<original_path>
+# The platform finds the ACTIVE session for that app, forwards the request to
+# the real service, and captures each call as a separate Recording.
+# Operation name is auto-extracted from <service_id> (or any configured tag).
+
+@router.api_route(
+    "/proxy/{app_name}/{path:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+    response_model=None,
+    include_in_schema=True,
+)
+async def transparent_proxy(
+    app_name: str,
+    path: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    透明录制代理：将测试工具的目标地址从
+        http://host:port/<path>
+    改为
+        http://platform:8001/api/v1/proxy/<app_name>/<path>
+    即可自动录制，无需修改其他任何配置。
+
+    同一 URL 不同请求体的接口（如通过 <service_id> 区分的 XML 服务）
+    均会被单独记录，彻底绕过 arex-agent 的 URL 级去重限制。
+    """
+    import re as _re
+    import time as _time
+    import httpx as _httpx
+    from fastapi.responses import Response as _FResponse
+
+    # Find application by name
+    app_result = await db.execute(
+        select(Application).where(Application.name == app_name)
+    )
+    app = app_result.scalar_one_or_none()
+    if not app:
+        return _FResponse(
+            content=f"app '{app_name}' not found".encode(),
+            status_code=404,
+        )
+
+    # Find the active session
+    sess_result = await db.execute(
+        select(RecordingSession)
+        .where(
+            RecordingSession.app_id == app.id,
+            RecordingSession.status == "ACTIVE",
+        )
+        .order_by(RecordingSession.started_at.desc())
+        .limit(1)
+    )
+    session = sess_result.scalar_one_or_none()
+    if not session:
+        return _FResponse(
+            content=f"no ACTIVE session for app '{app_name}'".encode(),
+            status_code=409,
+        )
+
+    # Build target URL using app's repeater_port
+    target_base = f"http://{app.ssh_host}:{app.repeater_port}"
+    target_url = f"{target_base}/{path}"
+    query = request.url.query
+    if query:
+        target_url += f"?{query}"
+
+    # Read request body
+    body_bytes = await request.body()
+    body_str = body_bytes.decode("utf-8", errors="replace") if body_bytes else ""
+
+    # Forward headers (strip hop-by-hop)
+    skip = {"host", "content-length", "transfer-encoding", "connection"}
+    fwd_headers = {k: v for k, v in request.headers.items() if k.lower() not in skip}
+    fwd_headers = with_proxy_recording_header(fwd_headers)
+
+    # Forward request to real service
+    response_text = ""
+    resp_status = 502
+    resp_headers: dict = {}
+    resp_content = b""
+    duration_ms = 0
+    try:
+        _t0 = _time.monotonic()
+        async with _httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.request(
+                method=request.method,
+                url=target_url,
+                headers=fwd_headers,
+                content=body_bytes or None,
+            )
+        duration_ms = int((_time.monotonic() - _t0) * 1000)
+        resp_status = resp.status_code
+        resp_content = resp.content
+        response_text = resp.text
+        resp_headers = dict(resp.headers)
+    except Exception as e:
+        resp_content = f"proxy error: {e}".encode()
+        resp_status = 502
+
+    operation = extract_operation_name(body_str, get_operation_id_tags(app)) or ""
+
+    req_path = f"/{path}"
+    operation_label = operation or req_path
+    content_type = fwd_headers.get("content-type") or fwd_headers.get("Content-Type") or ""
+
+    request_body_obj = _json.dumps({
+        "method": request.method,
+        "uri": req_path,
+        "body": body_str or None,
+        "contentType": content_type or None,
+    }, ensure_ascii=False)
+
+    rec = Recording(
+        id=str(uuid.uuid4()),
+        session_id=session.id,
+        app_id=app.id,
+        entry_type="HTTP",
+        entry_app=app.name,
+        host=f"{app.ssh_host}:{app.repeater_port}",
+        path=operation_label,
+        request_body=request_body_obj,
+        response_body=response_text,
+        duration_ms=duration_ms,
+        timestamp=datetime.utcnow(),
+        status="RAW",
+    )
+    db.add(rec)
+    session.record_count = (session.record_count or 0) + 1
+    await db.commit()
+
+    # Strip hop-by-hop response headers before returning
+    skip_resp = {"transfer-encoding", "content-encoding", "content-length", "connection"}
+    clean_headers = {k: v for k, v in resp_headers.items() if k.lower() not in skip_resp}
+
+    return _FResponse(
+        content=resp_content,
+        status_code=resp_status,
+        headers=clean_headers,
+        media_type=resp_headers.get("content-type"),
+    )
+
+
 # ── Recordings ────────────────────────────────────────────────────────────────
 
 @router.get("/recordings", response_model=dict)
@@ -380,11 +705,14 @@ async def list_recordings(
     session_id: str | None = None,
     app_id: str | None = None,
     entry_type: str | None = None,
+    status: str | None = None,
     path_contains: str | None = None,
     created_after: str | None = None,
     created_before: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    sort_by: str = "created_at",
+    sort_order: str = "desc",
     db: AsyncSession = Depends(get_db),
 ):
     base = select(Recording)
@@ -394,6 +722,8 @@ async def list_recordings(
         base = base.where(Recording.app_id == app_id)
     if entry_type:
         base = base.where(Recording.entry_type == entry_type.upper())
+    if status:
+        base = base.where(Recording.status == status)
     if path_contains:
         base = base.where(Recording.path.ilike(f"%{path_contains}%"))
     if created_after:
@@ -402,8 +732,13 @@ async def list_recordings(
     if created_before:
         from datetime import datetime as _dt
         base = base.where(Recording.created_at <= _dt.fromisoformat(created_before.replace("Z", "+00:00")))
+    _RECORDING_SORT_COLS = {"created_at", "duration_ms"}
+    if sort_by not in _RECORDING_SORT_COLS:
+        raise HTTPException(400, f"Invalid sort_by '{sort_by}'. Allowed: {_RECORDING_SORT_COLS}")
+    _sort_col = getattr(Recording, sort_by)
+    _order_expr = _sort_col.desc() if sort_order == "desc" else _sort_col.asc()
     total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
-    items = (await db.execute(base.order_by(Recording.created_at.desc()).offset(offset).limit(limit))).scalars().all()
+    items = (await db.execute(base.order_by(_order_expr).offset(offset).limit(limit))).scalars().all()
     return {"items": [RecordingOut.model_validate(i) for i in items], "total": total}
 
 
@@ -475,6 +810,7 @@ async def import_har(
         post_data = req.get("postData") or {}
         body_text = post_data.get("text") or ""
         content_type = post_data.get("mimeType") or ""
+        operation_label = extract_operation_name(body_text, get_operation_id_tags(app)) or path
 
         request_body_obj = {
             "method": method,
@@ -492,7 +828,11 @@ async def import_har(
         timestamp = None
         if started_str:
             try:
-                timestamp = datetime.fromisoformat(started_str.replace("Z", "+00:00"))
+                parsed_ts = datetime.fromisoformat(started_str.replace("Z", "+00:00"))
+                if parsed_ts.tzinfo is not None:
+                    timestamp = parsed_ts.astimezone().replace(tzinfo=None)
+                else:
+                    timestamp = parsed_ts
             except Exception:
                 pass
 
@@ -504,7 +844,7 @@ async def import_har(
             app_id=app_id,
             entry_type="HTTP",
             host=host,
-            path=path,
+            path=operation_label,
             request_body=_json.dumps(request_body_obj, ensure_ascii=False),
             response_body=resp_text or None,
             duration_ms=duration_ms,
