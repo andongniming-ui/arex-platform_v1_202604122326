@@ -1,25 +1,128 @@
 <template>
-  <n-card title="录制中心">
+  <n-card title="录制会话">
     <template #header-extra>
       <n-button v-if="fromAppId" size="small" @click="router.push(`/applications/${fromAppId}`)">← 返回应用详情</n-button>
     </template>
     <n-space vertical :size="12">
-      <n-space align="center" wrap>
-        <n-select
-          v-model:value="filterAppId"
-          :options="appOptions"
-          placeholder="选择应用"
-          clearable
-          style="width: 180px"
-          @update:value="onAppChange"
+      <n-card title="会话列表" size="small">
+        <template #header-extra>
+          <n-space align="center" wrap>
+            <n-input
+              v-model:value="sessionKeyword"
+              placeholder="搜索会话名称"
+              clearable
+              style="width: 180px"
+              @keyup.enter="onSessionFilterChange"
+              @clear="onSessionFilterChange"
+            />
+            <n-select
+              v-model:value="filterAppId"
+              :options="appOptions"
+              placeholder="选择应用"
+              clearable
+              style="width: 180px"
+              @update:value="onAppChange"
+            />
+            <n-select
+              v-model:value="sessionStatus"
+              :options="sessionStatusOptions"
+              placeholder="会话状态"
+              clearable
+              style="width: 130px"
+              @update:value="onSessionFilterChange"
+            />
+            <n-date-picker
+              v-model:value="sessionStartedRange"
+              type="datetimerange"
+              clearable
+              :shortcuts="dateShortcuts"
+              style="width: 320px"
+              start-placeholder="会话开始时间"
+              end-placeholder="会话结束时间"
+              @update:value="onSessionFilterChange"
+              @clear="onSessionFilterChange"
+            />
+            <n-button @click="onSessionFilterChange">搜索</n-button>
+            <n-button @click="clearSessionFilters">清空筛选</n-button>
+            <n-button @click="showHarModal = true">导入 HAR</n-button>
+            <n-button
+              :disabled="selectedSessionIds.length === 0"
+              :loading="batchDeletingSessions"
+              @click="deleteSelectedSessions"
+            >
+              批量删除
+            </n-button>
+            <n-button
+              type="error"
+              ghost
+              :disabled="sessionRows.length === 0"
+              :loading="batchDeletingSessions"
+              @click="deleteAllSessions"
+            >
+              全部删除
+            </n-button>
+          </n-space>
+        </template>
+        <n-data-table
+          remote
+          :columns="sessionColumns"
+          :data="sessionRows"
+          :loading="sessionsLoading"
+          :row-key="(r: any) => r.id"
+          :checked-row-keys="selectedSessionIds"
+          @update:checked-row-keys="selectedSessionIds = $event as string[]"
+          @update:sorter="onSessionSorterChange"
         />
-        <n-select
-          v-model:value="filterSessionId"
-          :options="sessionOptions"
-          placeholder="选择会话"
+        <n-space justify="space-between" align="center" style="margin-top:12px">
+          <span style="font-size:13px;color:#666">共 {{ sessionPagination.itemCount }} 个会话</span>
+          <n-pagination
+            v-model:page="sessionPagination.page"
+            v-model:page-size="sessionPagination.pageSize"
+            :page-sizes="sessionPagination.pageSizes"
+            :item-count="sessionPagination.itemCount"
+            show-size-picker
+            :show-quick-jumper="true"
+            :disabled="sessionsLoading"
+            @update:page="loadSessionsPage"
+            @update:page-size="(size) => { sessionPagination.pageSize = size; sessionPagination.page = 1; loadSessionsPage() }"
+          />
+        </n-space>
+      </n-card>
+
+      <div ref="interfacesSectionRef">
+      <n-card :title="activeSessionTitle" size="small">
+        <template #header-extra>
+          <n-space align="center" wrap>
+            <n-tag v-if="activeSession" size="small" type="success">
+              当前会话: {{ activeSession.name || activeSession.id.slice(0, 8) }}
+            </n-tag>
+            <n-select
+              v-model:value="filterSessionId"
+              :options="sessionOptions"
+              placeholder="选择会话"
+              clearable
+              style="width: 240px"
+              @update:value="load"
+            />
+            <n-button v-if="filterSessionId" quaternary @click="router.push(`/recording/sessions/${filterSessionId}`)">
+              会话详情
+            </n-button>
+          </n-space>
+        </template>
+        <n-space v-if="!filterSessionId" vertical :size="8">
+          <span style="color:#666;font-size:13px">
+            先在上面的会话列表里选择一个录制会话，再查看该会话下录到的接口。
+          </span>
+        </n-space>
+        <n-space v-else vertical :size="12">
+      <n-space align="center" wrap>
+        <n-input
+          v-model:value="filterPathKeyword"
+          placeholder="接口路径 / 交易码"
           clearable
-          style="width: 220px"
-          @update:value="load"
+          style="width: 200px"
+          @keyup.enter="load"
+          @clear="load"
         />
         <n-select
           v-model:value="filterType"
@@ -48,8 +151,15 @@
           style="width: 130px"
           @update:value="applyQualityFilter"
         />
+        <n-select
+          v-model:value="filterRecordStatus"
+          :options="recordStatusOptions"
+          placeholder="录制状态"
+          clearable
+          style="width: 130px"
+          @update:value="load"
+        />
         <n-button @click="load">搜索</n-button>
-        <n-button @click="showHarModal = true">导入 HAR</n-button>
         <n-button
           size="small"
           :type="failedSelected ? 'warning' : 'default'"
@@ -57,9 +167,11 @@
           @click="toggleFailedRows"
           :disabled="filteredRecordings.length === 0"
         >{{ failedSelected ? '撤销选中' : '选中失败项' }}</n-button>
+        <n-button size="small" @click="clearRecordingFilters">清空筛选</n-button>
       </n-space>
 
       <n-data-table
+        remote
         :columns="columns"
         :data="filteredRecordings"
         :loading="loading"
@@ -67,6 +179,7 @@
         :checked-row-keys="selectedIds"
         :scroll-x="1050"
         @update:checked-row-keys="selectedIds = $event as string[]"
+        @update:sorter="onRecordingSorterChange"
       />
 
       <n-space justify="end" style="margin-top:12px">
@@ -93,6 +206,9 @@
         <n-button size="small" @click="showTagModal = true">批量打标签</n-button>
         <n-button size="small" type="error" :loading="batchDeleting" @click="deleteSelected">批量删除</n-button>
       </n-space>
+        </n-space>
+      </n-card>
+      </div>
     </n-space>
   </n-card>
 
@@ -151,16 +267,17 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, watch, onMounted, onActivated, h } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onActivated, h, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  NCard, NSpace, NSelect, NButton, NDataTable, NTag, NModal,
+  NCard, NSpace, NSelect, NButton, NDataTable, NTag, NModal, NInput,
   NIcon, NDynamicTags, NUpload, NPagination, NDatePicker, useMessage, useDialog,
 } from 'naive-ui'
 import { recordingApi, sessionApi, type Recording, type Session } from '@/api/recordings'
 import { fmtTime } from '@/utils/time'
 import { applicationApi } from '@/api/applications'
 import { testCaseApi } from '@/api/testCases'
+import { getQueryDateRange, getQueryText, setQueryDateRange, setQueryText } from '@/utils/filterQuery'
 
 const route = useRoute()
 const router = useRouter()
@@ -169,17 +286,25 @@ const dialog = useDialog()
 
 const recordings = ref<Recording[]>([])
 const loading = ref(false)
+const sessionsLoading = ref(false)
 const batchDeleting = ref(false)
 const tagging = ref(false)
+const batchDeletingSessions = ref(false)
+const selectedSessionIds = ref<string[]>([])
 const selectedIds = ref<string[]>([])
 
 // 从应用详情跳入时携带 app_id，用于显示返回按钮
 const fromAppId = ref<string | null>(route.query.app_id as string || null)
-const filterAppId = ref<string | null>(route.query.app_id as string || null)
-const filterSessionId = ref<string | null>(route.query.session_id as string || null)
-const filterType = ref<string | null>(null)
-const filterDateRange = ref<[number, number] | null>(null)
-const filterQuality = ref<string | null>(null)
+const filterAppId = ref<string | null>(getQueryText(route.query, 'app_id'))
+const filterSessionId = ref<string | null>(getQueryText(route.query, 'session_id'))
+const sessionKeyword = ref(getQueryText(route.query, 'session_keyword') || '')
+const sessionStatus = ref<string | null>(getQueryText(route.query, 'session_status'))
+const sessionStartedRange = ref<[number, number] | null>(getQueryDateRange(route.query, 'session_started_from', 'session_started_to'))
+const filterType = ref<string | null>(getQueryText(route.query, 'entry_type'))
+const filterDateRange = ref<[number, number] | null>(getQueryDateRange(route.query, 'created_from', 'created_to'))
+const filterQuality = ref<string | null>(getQueryText(route.query, 'quality'))
+const filterPathKeyword = ref(getQueryText(route.query, 'path_keyword') || '')
+const filterRecordStatus = ref<string | null>(getQueryText(route.query, 'record_status'))
 
 const now = Date.now()
 const dateShortcuts = {
@@ -233,7 +358,7 @@ async function importHar() {
     harFile.value = null
     harFileName.value = ''
     harAppId.value = null
-    await load()
+    await init()
   } catch (e: any) {
     message.error(e.response?.data?.detail || '导入失败')
   } finally {
@@ -251,18 +376,162 @@ const pagination = reactive({
   onUpdatePageSize: (pageSize: number) => { pagination.pageSize = pageSize; pagination.page = 1; loadPage() },
 })
 
+const sessionPagination = reactive({
+  page: 1,
+  pageSize: 10,
+  pageSizes: [10, 20, 50],
+  itemCount: 0,
+})
+
+const sessionSortState = ref<{ columnKey: string; order: 'ascend' | 'descend' }>({
+  columnKey: 'started_at',
+  order: 'descend',
+})
+
+const recordingSortState = ref<{ columnKey: string; order: 'ascend' | 'descend' }>({
+  columnKey: 'created_at',
+  order: 'descend',
+})
+
+const interfacesSectionRef = ref<HTMLElement | null>(null)
+const activeSessionSnapshot = ref<Session | null>(null)
+
+const sessionStatusColor: Record<string, any> = {
+  ACTIVE: 'success',
+  COLLECTING: 'warning',
+  DONE: 'info',
+  ERROR: 'error',
+}
+
+const sessionStatusLabel: Record<string, string> = {
+  ACTIVE: '录制中',
+  COLLECTING: '采集中',
+  DONE: '已完成',
+  ERROR: '错误',
+}
+
+const sessionRows = computed(() => allSessions.value)
+
+const activeSession = computed(() =>
+  allSessions.value.find(s => s.id === filterSessionId.value) || activeSessionSnapshot.value
+)
+
+const activeSessionTitle = computed(() =>
+  activeSession.value
+    ? `会话接口 - ${activeSession.value.name || activeSession.value.id.slice(0, 8)}`
+    : '会话接口'
+)
+
+const sessionColumns = computed(() => [
+  { type: 'selection' as const, width: 40 },
+  {
+    title: '名称',
+    key: 'name',
+    render: (r: Session) => r.name || r.id.slice(0, 8),
+  },
+  {
+    title: '状态',
+    key: 'status',
+    width: 90,
+    render: (r: Session) =>
+      h(NTag, { size: 'small', type: sessionStatusColor[r.status] || 'default' }, () => sessionStatusLabel[r.status] || r.status),
+  },
+  { title: '录制数', key: 'record_count', width: 80 },
+  {
+    title: '开始时间',
+    key: 'started_at',
+    width: 170,
+    sorter: true,
+    sortOrder: sessionSortState.value.columnKey === 'started_at' ? sessionSortState.value.order : false,
+    render: (r: Session) => fmtTime(r.started_at),
+  },
+  {
+    title: '操作',
+    key: 'actions',
+    width: 290,
+    render: (r: Session) =>
+      h(NSpace, { size: 'small' }, () => [
+        h(NButton, {
+          size: 'small',
+          secondary: true,
+          onClick: () => openSession(r),
+        }, () => '查看接口'),
+        filterSessionId.value === r.id
+          ? h(NTag, { size: 'small', type: 'success', bordered: false }, () => '当前查看')
+          : null,
+        h(NButton, {
+          size: 'small',
+          onClick: () => router.push(`/recording/sessions/${r.id}`),
+        }, () => '会话详情'),
+        h(NButton, {
+          size: 'small',
+          type: 'error',
+          secondary: true,
+          disabled: r.status === 'ACTIVE',
+          onClick: () => deleteSession(r),
+        }, () => '删除'),
+      ]),
+  },
+])
+
 function onAppChange(appId: string | null) {
   filterSessionId.value = null
-  if (appId) {
-    sessionOptions.value = allSessions.value
-      .filter(s => s.app_id === appId)
-      .map(s => ({ label: `${s.name || s.id.slice(0, 8)} (${s.status})`, value: s.id }))
+  activeSessionSnapshot.value = null
+  onSessionFilterChange()
+  load()
+}
+
+async function openSession(session: Session) {
+  activeSessionSnapshot.value = session
+  filterSessionId.value = session.id
+  await load()
+  await nextTick()
+  interfacesSectionRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+function clearRecordingFilters() {
+  filterType.value = null
+  filterDateRange.value = null
+  filterQuality.value = null
+  filterPathKeyword.value = ''
+  filterRecordStatus.value = null
+  load()
+}
+
+function onSessionFilterChange() {
+  sessionPagination.page = 1
+  selectedSessionIds.value = []
+  loadSessionsPage()
+}
+
+function onSessionSorterChange(sorter: { columnKey: string; order: 'ascend' | 'descend' | false } | null) {
+  if (!sorter || sorter.order === false) {
+    sessionSortState.value = { columnKey: 'started_at', order: 'descend' }
   } else {
-    sessionOptions.value = allSessions.value.map(s => ({
-      label: `${s.name || s.id.slice(0, 8)} (${s.status})`,
-      value: s.id,
-    }))
+    sessionSortState.value = { columnKey: sorter.columnKey, order: sorter.order }
   }
+  sessionPagination.page = 1
+  loadSessionsPage()
+}
+
+function onRecordingSorterChange(sorter: { columnKey: string; order: 'ascend' | 'descend' | false } | null) {
+  if (!sorter || sorter.order === false) {
+    recordingSortState.value = { columnKey: 'created_at', order: 'descend' }
+  } else {
+    recordingSortState.value = { columnKey: sorter.columnKey, order: sorter.order }
+  }
+  pagination.page = 1
+  loadPage()
+}
+
+function clearSessionFilters() {
+  filterAppId.value = null
+  filterSessionId.value = null
+  sessionKeyword.value = ''
+  sessionStatus.value = null
+  sessionStartedRange.value = null
+  activeSessionSnapshot.value = null
+  onSessionFilterChange()
   load()
 }
 
@@ -281,12 +550,28 @@ const typeOptions = [
   { label: 'JAVA', value: 'JAVA' },
 ]
 
+const sessionStatusOptions = [
+  { label: '录制中', value: 'ACTIVE' },
+  { label: '采集中', value: 'COLLECTING' },
+  { label: '已完成', value: 'DONE' },
+  { label: '错误', value: 'ERROR' },
+]
+
 const qualityOptions = [
   { label: '✅ 成功 (2xx)', value: '2xx' },
   { label: '❌ 失败 (4xx)', value: '4xx' },
   { label: '❌ 服务错误 (5xx)', value: '5xx' },
   { label: '⚠️ 空响应', value: 'empty' },
   { label: '❓ 未知', value: 'unknown' },
+]
+
+const recordStatusOptions = [
+  { label: '原始', value: 'RAW' },
+  { label: '已解析', value: 'PARSED' },
+  { label: '已加入用例', value: 'ADDED_TO_CASE' },
+  { label: '通过', value: 'PASS' },
+  { label: '失败', value: 'FAIL' },
+  { label: '错误', value: 'ERROR' },
 ]
 
 /**
@@ -392,7 +677,7 @@ const statusLabel: Record<string, string> = {
   PASS: '通过', FAIL: '失败', ERROR: '错误', PARSED: '已解析', RAW: '原始', ADDED_TO_CASE: '已加入用例',
 }
 
-const columns = [
+const columns = computed(() => [
   { type: 'selection' as const, width: 40 },
   {
     title: '入口类型', key: 'entry_type', width: 85,
@@ -414,14 +699,24 @@ const columns = [
         ? h(NSpace, { size: 4 }, () => r.tags!.map(t => h(NTag, { size: 'small', type: 'warning' }, () => t)))
         : '-',
   },
-  { title: '耗时(ms)', key: 'duration_ms', width: 80 },
+  {
+    title: '耗时(ms)',
+    key: 'duration_ms',
+    width: 80,
+    sorter: true,
+    sortOrder: recordingSortState.value.columnKey === 'duration_ms' ? recordingSortState.value.order : false,
+  },
   {
     title: '状态', key: 'status', width: 90,
     render: (r: Recording) =>
       h(NTag, { size: 'small', type: statusColor[r.status] || 'default' }, () => statusLabel[r.status] || r.status),
   },
   {
-    title: '时间', key: 'created_at', width: 155,
+    title: '时间',
+    key: 'created_at',
+    width: 155,
+    sorter: true,
+    sortOrder: recordingSortState.value.columnKey === 'created_at' ? recordingSortState.value.order : false,
     render: (r: Recording) => fmtTime(r.created_at),
   },
   {
@@ -432,7 +727,7 @@ const columns = [
         h(NButton, { size: 'small', type: 'error', onClick: () => deleteSingle(r.id) }, () => '删除'),
       ]),
   },
-]
+])
 
 // 筛选条件变化时重置到第 1 页
 async function load() {
@@ -443,6 +738,12 @@ async function load() {
 
 // 翻页/改页大小时调用，不重置页码
 async function loadPage() {
+  if (!filterSessionId.value) {
+    recordings.value = []
+    pagination.itemCount = 0
+    loading.value = false
+    return
+  }
   loading.value = true
   selectedIds.value = []
   try {
@@ -450,10 +751,14 @@ async function loadPage() {
       app_id: filterAppId.value || undefined,
       session_id: filterSessionId.value || undefined,
       entry_type: filterType.value || undefined,
+      status: filterRecordStatus.value || undefined,
+      path_contains: filterPathKeyword.value || undefined,
       created_after: filterDateRange.value ? new Date(filterDateRange.value[0]).toISOString() : undefined,
       created_before: filterDateRange.value ? new Date(filterDateRange.value[1]).toISOString() : undefined,
       limit: pagination.pageSize,
       offset: (pagination.page - 1) * pagination.pageSize,
+      sort_by: recordingSortState.value.columnKey,
+      sort_order: recordingSortState.value.order === 'ascend' ? 'asc' : 'desc',
     })
     recordings.value = res.data.items
     pagination.itemCount = res.data.total
@@ -517,27 +822,170 @@ async function addToCase() {
   selectedIds.value = []
 }
 
-async function init() {
-  const [appsRes, sessionsRes] = await Promise.all([
-    applicationApi.list(),
-    sessionApi.list(),
-  ])
-  appOptions.value = appsRes.data.map(a => ({ label: a.name, value: a.id }))
-  allSessions.value = sessionsRes.data.items
-
-  if (filterSessionId.value) {
-    const s = sessionsRes.data.items.find(s => s.id === filterSessionId.value)
-    if (s) filterAppId.value = s.app_id
+function clearDeletedSessions(deletedIds: string[]) {
+  const deleted = new Set(deletedIds)
+  allSessions.value = allSessions.value.filter(s => !deleted.has(s.id))
+  selectedSessionIds.value = selectedSessionIds.value.filter(id => !deleted.has(id))
+  sessionOptions.value = sessionOptions.value.filter(opt => !deleted.has(opt.value))
+  sessionPagination.itemCount = Math.max(0, sessionPagination.itemCount - deletedIds.length)
+  if (filterSessionId.value && deleted.has(filterSessionId.value)) {
+    filterSessionId.value = null
+    activeSessionSnapshot.value = null
+    recordings.value = []
+    pagination.itemCount = 0
+    selectedIds.value = []
   }
+}
 
-  sessionOptions.value = (filterAppId.value
-    ? sessionsRes.data.items.filter(s => s.app_id === filterAppId.value)
-    : sessionsRes.data.items
-  ).map(s => ({ label: `${s.name || s.id.slice(0, 8)} (${s.status})`, value: s.id }))
+async function deleteSession(session: Session) {
+  if (session.status === 'ACTIVE') {
+    message.warning('请先停止录制再删除')
+    return
+  }
+  dialog.warning({
+    title: '确认删除',
+    content: `将删除会话“${session.name || session.id.slice(0, 8)}”及其全部录制数据，确认吗？`,
+    positiveText: '删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      await sessionApi.delete(session.id)
+      clearDeletedSessions([session.id])
+      await loadSessionsPage()
+      message.success('会话已删除')
+    },
+  })
+}
 
-  await load()
+async function deleteSelectedSessions() {
+  if (selectedSessionIds.value.length === 0) return
+  const active = sessionRows.value.filter(s => selectedSessionIds.value.includes(s.id) && s.status === 'ACTIVE')
+  if (active.length) {
+    message.warning('选中的会话中有正在录制的会话，请先停止录制再删除')
+    return
+  }
+  dialog.warning({
+    title: '确认批量删除',
+    content: `将删除选中的 ${selectedSessionIds.value.length} 个录制会话及其全部录制数据，确认吗？`,
+    positiveText: '删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      batchDeletingSessions.value = true
+      try {
+        const ids = [...selectedSessionIds.value]
+        await sessionApi.batchDelete(ids)
+        clearDeletedSessions(ids)
+        await loadSessionsPage()
+        message.success(`已删除 ${ids.length} 个会话`)
+      } finally {
+        batchDeletingSessions.value = false
+      }
+    },
+  })
+}
+
+async function deleteAllSessions() {
+  if (sessionRows.value.length === 0) return
+  const active = sessionRows.value.filter(s => s.status === 'ACTIVE')
+  if (active.length) {
+    message.warning('当前列表中有正在录制的会话，请先停止录制再删除')
+    return
+  }
+  dialog.warning({
+    title: '确认全部删除',
+    content: `将删除当前列表中的 ${sessionRows.value.length} 个录制会话及其全部录制数据，确认吗？`,
+    positiveText: '全部删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      batchDeletingSessions.value = true
+      try {
+        const ids = sessionRows.value.map(s => s.id)
+        await sessionApi.batchDelete(ids)
+        clearDeletedSessions(ids)
+        await loadSessionsPage()
+        message.success(`已删除当前列表中的 ${ids.length} 个会话`)
+      } finally {
+        batchDeletingSessions.value = false
+      }
+    },
+  })
+}
+
+async function loadSessionsPage() {
+  sessionsLoading.value = true
+  try {
+    const sessionsRes = await sessionApi.search({
+      app_id: filterAppId.value || undefined,
+      name: sessionKeyword.value || undefined,
+      status: sessionStatus.value || undefined,
+      started_after: sessionStartedRange.value ? new Date(sessionStartedRange.value[0]).toISOString() : undefined,
+      started_before: sessionStartedRange.value ? new Date(sessionStartedRange.value[1]).toISOString() : undefined,
+      limit: sessionPagination.pageSize,
+      offset: (sessionPagination.page - 1) * sessionPagination.pageSize,
+      sort_by: sessionSortState.value.columnKey,
+      sort_order: sessionSortState.value.order === 'ascend' ? 'asc' : 'desc',
+    })
+    allSessions.value = sessionsRes.data.items
+    sessionPagination.itemCount = sessionsRes.data.total
+
+    if (filterSessionId.value) {
+      const s = sessionsRes.data.items.find(s => s.id === filterSessionId.value)
+      if (s) {
+        filterAppId.value = s.app_id
+        activeSessionSnapshot.value = s
+      } else if (!activeSessionSnapshot.value || activeSessionSnapshot.value.id !== filterSessionId.value) {
+        try {
+          const detail = await sessionApi.get(filterSessionId.value)
+          activeSessionSnapshot.value = detail.data
+        } catch {
+          activeSessionSnapshot.value = null
+        }
+      }
+    }
+
+    const optionSource = [...sessionsRes.data.items]
+    if (activeSessionSnapshot.value && !optionSource.some(s => s.id === activeSessionSnapshot.value!.id)) {
+      optionSource.unshift(activeSessionSnapshot.value)
+    }
+    sessionOptions.value = optionSource.map(s => ({ label: `${s.name || s.id.slice(0, 8)} (${s.status})`, value: s.id }))
+  } finally {
+    sessionsLoading.value = false
+  }
+}
+
+async function init() {
+  const appsRes = await applicationApi.list()
+  appOptions.value = appsRes.data.map(a => ({ label: a.name, value: a.id }))
+
+  await loadSessionsPage()
+  await loadPage()
 }
 
 onMounted(init)
 onActivated(init)
+
+watch([
+  filterAppId,
+  filterSessionId,
+  sessionKeyword,
+  sessionStatus,
+  sessionStartedRange,
+  filterType,
+  filterDateRange,
+  filterQuality,
+  filterPathKeyword,
+  filterRecordStatus,
+], () => {
+  const query: Record<string, string> = {}
+  setQueryText(query, 'app_id', filterAppId.value)
+  setQueryText(query, 'session_id', filterSessionId.value)
+  setQueryText(query, 'session_keyword', sessionKeyword.value.trim() || null)
+  setQueryText(query, 'session_status', sessionStatus.value)
+  setQueryDateRange(query, sessionStartedRange.value, 'session_started_from', 'session_started_to')
+  setQueryText(query, 'entry_type', filterType.value)
+  setQueryText(query, 'quality', filterQuality.value)
+  setQueryText(query, 'path_keyword', filterPathKeyword.value.trim() || null)
+  setQueryText(query, 'record_status', filterRecordStatus.value)
+  setQueryDateRange(query, filterDateRange.value, 'created_from', 'created_to')
+  router.replace({ query })
+})
 </script>
