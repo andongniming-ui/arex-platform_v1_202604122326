@@ -2,13 +2,35 @@
   <n-space vertical :size="16">
     <n-card title="双环境对比">
       <template #header-extra>
-        <n-space align="center">
-          <n-input
-            v-model:value="searchRunName"
-            placeholder="搜索名称/用例/应用"
+        <n-space align="center" wrap>
+        <n-input
+          v-model:value="searchRunName"
+          placeholder="搜索名称/用例/应用"
+          clearable
+          style="width: 200px"
+          @keyup.enter="onRunFilterChange"
+          @clear="onRunFilterChange"
+        />
+          <n-select
+            v-model:value="searchRunStatus"
+            :options="runStatusOptions"
+            placeholder="按状态筛选"
             clearable
-            style="width: 200px"
-          />
+            style="width: 130px"
+          @update:value="onRunFilterChange"
+        />
+          <n-date-picker
+            v-model:value="searchRunCreatedRange"
+            type="datetimerange"
+            clearable
+            :shortcuts="dateShortcuts"
+            style="width: 320px"
+            start-placeholder="对比开始时间"
+            end-placeholder="对比结束时间"
+          @update:value="onRunFilterChange"
+          @clear="onRunFilterChange"
+        />
+          <n-button size="small" @click="clearFilters">清空筛选</n-button>
           <n-button type="primary" size="small" @click="showCreate = true">+ 新建对比</n-button>
         </n-space>
       </template>
@@ -24,6 +46,7 @@
         :checked-row-keys="selectedIds"
         :pagination="runsPagination"
         @update:checked-row-keys="selectedIds = $event as string[]"
+        @update:sorter="onSorterChange"
       />
       <n-space v-if="selectedIds.length > 0" align="center" style="margin-top:10px">
         <span>已选 {{ selectedIds.length }} 条</span>
@@ -74,6 +97,8 @@
           placeholder="按接口路径搜索"
           clearable
           style="width: 220px"
+          @keyup.enter="onResultFilterChange"
+          @clear="onResultFilterChange"
         />
         <n-select
           v-model:value="searchResultStatus"
@@ -81,6 +106,7 @@
           placeholder="一致性筛选"
           clearable
           style="width: 130px"
+          @update:value="onResultFilterChange"
         />
         <n-button size="small" @click="loadResults(activeRun!.id)">刷新</n-button>
         <span style="color:#999;font-size:13px">共 {{ resultsTotal }} 条</span>
@@ -173,11 +199,13 @@ import {
   NCard, NSpace, NButton, NDataTable, NModal, NForm, NFormItem,
   NInput, NInputNumber, NSelect, NDynamicTags, NTag, NDescriptions,
   NDescriptionsItem, NGrid, NGi, NPopconfirm, useMessage, useDialog,
+  NDatePicker,
 } from 'naive-ui'
 import { compareApi, type CompareRun, type CompareResult } from '@/api/compare'
 import { applicationApi } from '@/api/applications'
 import { testCaseApi } from '@/api/testCases'
 import { fmtTime } from '@/utils/time'
+import { createDateShortcuts, type DateRangeValue } from '@/utils/dateRange'
 
 const message = useMessage()
 const dialog = useDialog()
@@ -195,16 +223,16 @@ const showDetail = ref(false)
 const detailResult = ref<CompareResult | null>(null)
 
 const searchRunName = ref('')
-const filteredRuns = computed(() => {
-  if (!searchRunName.value) return runs.value
-  const kw = searchRunName.value.toLowerCase()
-  return runs.value.filter(r =>
-    (r.name || '').toLowerCase().includes(kw) ||
-    (caseMap.value[r.case_id] || '').toLowerCase().includes(kw) ||
-    (appMap.value[r.app_a_id] || '').toLowerCase().includes(kw) ||
-    (appMap.value[r.app_b_id] || '').toLowerCase().includes(kw)
-  )
-})
+const searchRunStatus = ref<string | null>(null)
+const searchRunCreatedRange = ref<DateRangeValue>(null)
+const sortOrder = ref<'ascend' | 'descend'>('descend')
+const dateShortcuts = createDateShortcuts()
+const filteredRuns = computed(() => runs.value)
+const runStatusOptions = [
+  { label: '已完成', value: 'DONE' },
+  { label: '运行中', value: 'RUNNING' },
+  { label: '失败', value: 'FAILED' },
+]
 
 const runsPagination = reactive({
   page: 1,
@@ -212,24 +240,14 @@ const runsPagination = reactive({
   showSizePicker: true,
   pageSizes: [10, 20, 50],
   itemCount: 0,
-  onChange: (page: number) => { runsPagination.page = page },
-  onUpdatePageSize: (size: number) => { runsPagination.pageSize = size; runsPagination.page = 1 },
+  onChange: (page: number) => { runsPagination.page = page; loadRuns() },
+  onUpdatePageSize: (size: number) => { runsPagination.pageSize = size; runsPagination.page = 1; loadRuns() },
 })
 
 const searchResultPath = ref('')
 const searchResultStatus = ref<string | null>(null)
 const filteredResults = computed(() => {
-  let list = results.value
-  if (searchResultPath.value) {
-    const kw = searchResultPath.value.toLowerCase()
-    list = list.filter(r => (r.path || '').toLowerCase().includes(kw))
-  }
-  if (searchResultStatus.value === 'diverged') {
-    list = list.filter(r => r.status_a !== r.status_b)
-  } else if (searchResultStatus.value === 'agreed') {
-    list = list.filter(r => r.status_a === r.status_b)
-  }
-  return list
+  return results.value
 })
 const compareStatusOptions = [
   { label: '仅看差异', value: 'diverged' },
@@ -242,8 +260,15 @@ const resultsPagination = reactive({
   showSizePicker: true,
   pageSizes: [20, 50, 100],
   itemCount: 0,
-  onChange: (page: number) => { resultsPagination.page = page },
-  onUpdatePageSize: (size: number) => { resultsPagination.pageSize = size; resultsPagination.page = 1 },
+  onChange: (page: number) => {
+    resultsPagination.page = page
+    if (activeRun.value) loadResults(activeRun.value.id)
+  },
+  onUpdatePageSize: (size: number) => {
+    resultsPagination.pageSize = size
+    resultsPagination.page = 1
+    if (activeRun.value) loadResults(activeRun.value.id)
+  },
 })
 
 const runsTotal = ref(0)
@@ -276,7 +301,7 @@ function fmtJson(s?: string | null) {
 const statusTag = (s?: string | null) =>
   h(NTag, { type: s === 'PASS' ? 'success' : 'error', size: 'small' }, () => s === 'PASS' ? '通过' : s === 'FAIL' ? '失败' : s || '-')
 
-const runColumns = [
+const runColumns = computed(() => [
   { type: 'selection' as const, width: 40 },
   { title: '名称', key: 'name', render: (r: CompareRun) => r.name || '-' },
   { title: '测试用例', key: 'case', render: (r: CompareRun) => caseMap.value[r.case_id] || r.case_id.slice(0, 8) },
@@ -298,12 +323,18 @@ const runColumns = [
         h('span', { style: 'color:#999' }, ` / ${r.total_count}`),
       ]),
   },
-  { title: '创建时间', key: 'created_at', render: (r: CompareRun) => fmtTime(r.created_at) },
+  {
+    title: '创建时间',
+    key: 'created_at',
+    sorter: true,
+    sortOrder: sortOrder.value,
+    render: (r: CompareRun) => fmtTime(r.created_at),
+  },
   {
     title: '操作', key: 'actions', width: 100,
     render: (r: CompareRun) => h(NButton, { size: 'small', onClick: () => openRun(r) }, () => '查看结果'),
   },
-]
+])
 
 const resultColumns = [
   {
@@ -341,12 +372,43 @@ const resultColumns = [
 async function loadRuns() {
   loading.value = true
   try {
-    const res = await compareApi.list({ limit: 50 })
+    const res = await compareApi.list({
+      keyword: searchRunName.value.trim() || undefined,
+      status: searchRunStatus.value || undefined,
+      created_after: searchRunCreatedRange.value ? new Date(searchRunCreatedRange.value[0]).toISOString() : undefined,
+      created_before: searchRunCreatedRange.value ? new Date(searchRunCreatedRange.value[1]).toISOString() : undefined,
+      limit: runsPagination.pageSize,
+      offset: (runsPagination.page - 1) * runsPagination.pageSize,
+    })
     runs.value = res.data.items
+    runs.value = [...runs.value].sort((a, b) => {
+      const diff = new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      return sortOrder.value === 'ascend' ? diff : -diff
+    })
     runsTotal.value = res.data.total
     runsPagination.itemCount = res.data.total
   } finally {
     loading.value = false
+  }
+}
+
+function clearFilters() {
+  searchRunName.value = ''
+  searchRunStatus.value = null
+  searchRunCreatedRange.value = null
+  runsPagination.page = 1
+  loadRuns()
+}
+
+function onRunFilterChange() {
+  runsPagination.page = 1
+  loadRuns()
+}
+
+function onSorterChange(sorter: { columnKey: string; order: 'ascend' | 'descend' | false } | null) {
+  if (sorter?.columnKey === 'created_at') {
+    sortOrder.value = sorter.order || 'descend'
+    loadRuns()
   }
 }
 
@@ -361,12 +423,24 @@ async function openRun(run: CompareRun) {
 async function loadResults(runId: string) {
   resultsLoading.value = true
   try {
-    const res = await compareApi.results(runId, { limit: 100 })
+    const res = await compareApi.results(runId, {
+      path_contains: searchResultPath.value.trim() || undefined,
+      agreement: searchResultStatus.value || undefined,
+      limit: resultsPagination.pageSize,
+      offset: (resultsPagination.page - 1) * resultsPagination.pageSize,
+    })
     results.value = res.data.items
     resultsTotal.value = res.data.total
     resultsPagination.itemCount = res.data.total
   } finally {
     resultsLoading.value = false
+  }
+}
+
+function onResultFilterChange() {
+  resultsPagination.page = 1
+  if (activeRun.value) {
+    loadResults(activeRun.value.id)
   }
 }
 
@@ -441,9 +515,9 @@ onMounted(async () => {
       appOptions.value = appsRes.data.map(a => ({ label: a.name, value: a.id }))
       appMap.value = Object.fromEntries(appsRes.data.map(a => [a.id, a.name]))
     }).catch(() => {}),
-    testCaseApi.list({ limit: 500 }).then(casesRes => {
-      caseOptions.value = casesRes.data.items.map(c => ({ label: c.name, value: c.id }))
-      caseMap.value = Object.fromEntries(casesRes.data.items.map(c => [c.id, c.name]))
+    testCaseApi.listAll().then(items => {
+      caseOptions.value = items.map(c => ({ label: c.name, value: c.id }))
+      caseMap.value = Object.fromEntries(items.map(c => [c.id, c.name]))
     }).catch(() => {}),
     loadRuns(),
   ])

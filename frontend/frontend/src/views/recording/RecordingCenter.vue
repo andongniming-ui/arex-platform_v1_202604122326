@@ -537,8 +537,8 @@ function clearSessionFilters() {
 
 watch(showAddToCase, async (val) => {
   if (val) {
-    const res = await testCaseApi.list({ app_id: filterAppId.value || undefined, limit: 500 })
-    caseOptions.value = res.data.items.map(c => ({ label: c.name, value: c.id }))
+    const items = await testCaseApi.listAll({ app_id: filterAppId.value || undefined })
+    caseOptions.value = items.map(c => ({ label: c.name, value: c.id }))
     targetCaseId.value = null
   }
 })

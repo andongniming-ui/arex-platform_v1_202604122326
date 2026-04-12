@@ -24,6 +24,8 @@ async def create_test_case(body: TestCaseCreate, db: AsyncSession = Depends(get_
 async def list_test_cases(
     app_id: str | None = None,
     tag: str | None = None,
+    created_after: datetime | None = None,
+    created_before: datetime | None = None,
     limit: int = 20,
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
@@ -34,6 +36,10 @@ async def list_test_cases(
         base = base.where(TestCase.app_id == app_id)
     if tag:
         base = base.where(cast(TestCase.tags, String).ilike(f'%"{tag}"%'))
+    if created_after:
+        base = base.where(TestCase.created_at >= created_after)
+    if created_before:
+        base = base.where(TestCase.created_at <= created_before)
     total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
     result = await db.execute(base.order_by(TestCase.created_at.desc()).offset(offset).limit(limit))
     cases = result.scalars().all()

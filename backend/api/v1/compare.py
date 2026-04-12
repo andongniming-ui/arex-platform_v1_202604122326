@@ -9,7 +9,8 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, delete
+from sqlalchemy import select, func, delete, or_
+from sqlalchemy.orm import aliased
 from database import get_db
 from models.compare import CompareRun, CompareResult
 from models.test_case import TestCase, TestCaseRecording
@@ -69,14 +70,44 @@ async def create_compare_run(body: CompareRequest, db: AsyncSession = Depends(ge
 
 @router.get("", response_model=dict)
 async def list_compare_runs(
+    keyword: str | None = None,
     case_id: str | None = None,
+    app_id: str | None = None,
+    status: str | None = None,
+    created_after: datetime | None = None,
+    created_before: datetime | None = None,
     limit: int = 20,
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
 ):
-    base = select(CompareRun)
+    app_a = aliased(Application)
+    app_b = aliased(Application)
+    base = (
+        select(CompareRun)
+        .join(TestCase, TestCase.id == CompareRun.case_id, isouter=True)
+        .join(app_a, app_a.id == CompareRun.app_a_id, isouter=True)
+        .join(app_b, app_b.id == CompareRun.app_b_id, isouter=True)
+    )
+    if keyword:
+        like = f"%{keyword}%"
+        base = base.where(
+            or_(
+                CompareRun.name.ilike(like),
+                TestCase.name.ilike(like),
+                app_a.name.ilike(like),
+                app_b.name.ilike(like),
+            )
+        )
     if case_id:
         base = base.where(CompareRun.case_id == case_id)
+    if app_id:
+        base = base.where((CompareRun.app_a_id == app_id) | (CompareRun.app_b_id == app_id))
+    if status:
+        base = base.where(CompareRun.status == status)
+    if created_after:
+        base = base.where(CompareRun.created_at >= created_after)
+    if created_before:
+        base = base.where(CompareRun.created_at <= created_before)
     total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
     items = (await db.execute(base.order_by(CompareRun.created_at.desc()).offset(offset).limit(limit))).scalars().all()
     return {"items": [CompareRunOut.model_validate(i) for i in items], "total": total}
@@ -113,11 +144,19 @@ async def delete_compare_run(run_id: str, db: AsyncSession = Depends(get_db)):
 @router.get("/{run_id}/results", response_model=dict)
 async def list_compare_results(
     run_id: str,
+    path_contains: str | None = None,
+    agreement: str | None = None,
     limit: int = 50,
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
 ):
     base = select(CompareResult).where(CompareResult.run_id == run_id)
+    if path_contains:
+        base = base.where(CompareResult.path.ilike(f"%{path_contains}%"))
+    if agreement == "agreed":
+        base = base.where(CompareResult.status_a == CompareResult.status_b)
+    elif agreement == "diverged":
+        base = base.where(CompareResult.status_a != CompareResult.status_b)
     total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
     q = (
         select(CompareResult, Recording.request_body, Recording.response_body)
@@ -127,6 +166,12 @@ async def list_compare_results(
         .offset(offset)
         .limit(limit)
     )
+    if path_contains:
+        q = q.where(CompareResult.path.ilike(f"%{path_contains}%"))
+    if agreement == "agreed":
+        q = q.where(CompareResult.status_a == CompareResult.status_b)
+    elif agreement == "diverged":
+        q = q.where(CompareResult.status_a != CompareResult.status_b)
     rows = (await db.execute(q)).all()
     from api.v1.replays import _extract_service_id
     out = []

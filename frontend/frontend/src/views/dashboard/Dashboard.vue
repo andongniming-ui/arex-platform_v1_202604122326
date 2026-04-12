@@ -1,5 +1,47 @@
 <template>
   <n-space vertical :size="16">
+    <n-grid :cols="2" :x-gap="16" responsive="screen">
+      <n-grid-item>
+        <n-card title="新人第一次怎么开始" class="guide-card">
+          <div class="intro-list">
+            <div v-for="item in starterSteps" :key="item.title" class="intro-item">
+              <div class="intro-index">{{ item.index }}</div>
+              <div class="intro-body">
+                <div class="intro-title">{{ item.title }}</div>
+                <div class="intro-desc">{{ item.desc }}</div>
+              </div>
+            </div>
+          </div>
+        </n-card>
+      </n-grid-item>
+      <n-grid-item>
+        <n-card title="发布前回归从哪进" class="guide-card">
+          <div class="entry-grid">
+            <div v-for="item in releaseEntries" :key="item.title" class="entry-card">
+              <div class="entry-title-row">
+                <div class="entry-title">{{ item.title }}</div>
+                <n-button text type="primary" @click="router.push(item.path)">进入</n-button>
+              </div>
+              <div class="entry-scene">{{ item.scene }}</div>
+              <div class="entry-desc">{{ item.desc }}</div>
+            </div>
+          </div>
+        </n-card>
+      </n-grid-item>
+    </n-grid>
+
+    <n-card title="快捷入口">
+      <n-space wrap>
+        <n-button type="primary" @click="router.push('/applications')">应用管理</n-button>
+        <n-button @click="router.push('/recording')">录制会话</n-button>
+        <n-button @click="router.push('/test-cases')">测试用例库</n-button>
+        <n-button @click="router.push('/replay')">发起回放</n-button>
+        <n-button @click="router.push('/replay-history')">回放历史</n-button>
+        <n-button @click="router.push('/compare')">双环境对比</n-button>
+        <n-button @click="router.push('/settings')">平台指引</n-button>
+      </n-space>
+    </n-card>
+
     <!-- 汇总统计卡片 -->
     <n-card title="总览">
       <template #header-extra>
@@ -107,7 +149,7 @@ import { ref, computed, reactive, onMounted, h, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   NCard, NSpace, NStatistic, NSelect, NSkeleton, NDataTable, NTag,
-  NDrawer, NDrawerContent, NSpin, NEmpty, NButton, NInput,
+  NDrawer, NDrawerContent, NSpin, NEmpty, NButton, NInput, NGrid, NGridItem,
 } from 'naive-ui'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -128,6 +170,20 @@ const trend = ref<TrendPoint[]>([])
 const summary = ref<Summary | null>(null)
 const appOptions = ref<{ label: string; value: string }[]>([])
 const appMap = ref<Record<string, string>>({})
+
+const starterSteps = [
+  { index: '01', title: '接入应用', desc: '先在应用管理里配置 SSH、端口、JAR、Agent 和默认规则。' },
+  { index: '02', title: '创建录制会话', desc: '到录制会话页新建会话，再在业务系统里触发真实交易。' },
+  { index: '03', title: '沉淀测试用例', desc: '把有效录制加入测试用例，补齐忽略字段和断言。' },
+  { index: '04', title: '执行回放验证', desc: '在回放中心或双环境对比页验证新版本和目标环境。' },
+]
+
+const releaseEntries = [
+  { title: '单次回放', path: '/replay', scene: '验证单个版本', desc: '适合临时回归、缺陷复测、配置项调试。' },
+  { title: '回放套件', path: '/suites', scene: '批量回归', desc: '适合把核心链路打成一批统一执行。' },
+  { title: '双环境对比', path: '/compare', scene: '新老环境差异检查', desc: '同一批录制同时打到两个环境，看行为是否一致。' },
+  { title: '平台指引', path: '/settings', scene: '新人先看', desc: '集中说明每个菜单做什么、常见流程怎么走。' },
+]
 
 // 抽屉状态
 const showDrawer = ref(false)
@@ -378,3 +434,94 @@ onMounted(async () => {
   await reload()
 })
 </script>
+
+<style scoped>
+.guide-card {
+  min-height: 100%;
+}
+
+.intro-list {
+  display: grid;
+  gap: 14px;
+}
+
+.intro-item {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 14px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(31, 111, 235, 0.08), rgba(240, 138, 93, 0.08));
+}
+
+.intro-index {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #102a43;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+
+.intro-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #102a43;
+}
+
+.intro-desc {
+  margin-top: 6px;
+  color: #52607a;
+  line-height: 1.7;
+}
+
+.entry-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.entry-card {
+  padding: 15px;
+  border-radius: 16px;
+  background: #f8fafc;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.entry-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.entry-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #102a43;
+}
+
+.entry-scene {
+  margin-top: 8px;
+  color: #c05621;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.entry-desc {
+  margin-top: 8px;
+  color: #52607a;
+  line-height: 1.7;
+}
+
+@media (max-width: 960px) {
+  .entry-grid {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

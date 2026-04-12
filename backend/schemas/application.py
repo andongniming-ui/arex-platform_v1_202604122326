@@ -19,6 +19,7 @@ class ApplicationCreate(BaseModel):
     repeater_data_dir: str = "/root/.sandbox-module/repeater-data/record"
     sample_rate: float = 1.0
     desensitize_rules: list[dict] | None = None
+    operation_id_tags: list[str] | None = None
     xml_request_template: str | None = None
     default_ignore_fields: list[str] | None = None
     default_diff_rules: list[dict] | None = None
@@ -42,6 +43,7 @@ class ApplicationUpdate(BaseModel):
     repeater_data_dir: str | None = None
     sample_rate: float | None = None
     desensitize_rules: list[dict] | None = None
+    operation_id_tags: list[str] | None = None
     xml_request_template: str | None = None
     default_ignore_fields: list[str] | None = None
     default_diff_rules: list[dict] | None = None
@@ -65,6 +67,7 @@ class ApplicationOut(BaseModel):
     repeater_data_dir: str
     sample_rate: float
     desensitize_rules: list[dict] | None
+    operation_id_tags: list[str] | None
     xml_request_template: str | None
     default_ignore_fields: list[str] | None
     default_diff_rules: list[dict] | None

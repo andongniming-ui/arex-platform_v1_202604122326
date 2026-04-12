@@ -17,7 +17,14 @@ export interface TestCase {
 }
 
 export const testCaseApi = {
-  list: (params?: { app_id?: string; tag?: string; limit?: number; offset?: number }) =>
+  list: (params?: {
+    app_id?: string
+    tag?: string
+    created_after?: string
+    created_before?: string
+    limit?: number
+    offset?: number
+  }) =>
     client.get<PagedResult<TestCase>>('/test-cases', { params }),
   get: (id: string) => client.get<TestCase>(`/test-cases/${id}`),
   create: (data: { name: string; description?: string; app_id?: string; tags?: string[]; created_by?: string }) =>
@@ -40,4 +47,29 @@ export const testCaseApi = {
       analyzed_paths: number
       total_paths: number
     }>(`/test-cases/${id}/suggest-ignore`),
+  listAll: async (params?: {
+    app_id?: string
+    tag?: string
+    created_after?: string
+    created_before?: string
+  }) => {
+    const pageSize = 200
+    let offset = 0
+    let total = Infinity
+    const items: TestCase[] = []
+    while (offset < total) {
+      const res = await client.get<PagedResult<TestCase>>('/test-cases', {
+        params: {
+          ...params,
+          limit: pageSize,
+          offset,
+        },
+      })
+      items.push(...res.data.items)
+      total = res.data.total
+      offset += pageSize
+      if (res.data.items.length === 0) break
+    }
+    return items
+  },
 }

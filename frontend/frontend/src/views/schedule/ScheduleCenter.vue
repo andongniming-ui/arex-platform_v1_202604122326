@@ -2,7 +2,7 @@
   <n-space vertical :size="16">
     <n-card title="定时回放">
       <template #header-extra>
-        <n-space>
+        <n-space wrap>
           <n-input
             v-model:value="searchKeyword"
             placeholder="搜索任务/用例名称"
@@ -23,6 +23,16 @@
             clearable
             style="width: 110px"
           />
+          <n-date-picker
+            v-model:value="searchCreatedRange"
+            type="datetimerange"
+            clearable
+            :shortcuts="dateShortcuts"
+            style="width: 320px"
+            start-placeholder="创建开始时间"
+            end-placeholder="创建结束时间"
+          />
+          <n-button @click="clearFilters">清空筛选</n-button>
           <n-button type="primary" @click="openCreate">+ 新建定时任务</n-button>
         </n-space>
       </template>
@@ -37,6 +47,7 @@
         :row-key="(r: any) => r.id"
         :checked-row-keys="selectedIds"
         @update:checked-row-keys="selectedIds = $event as string[]"
+        @update:sorter="onSorterChange"
       />
       <n-space v-if="selectedIds.length > 0" align="center" style="margin-top:10px">
         <span>已选 {{ selectedIds.length }} 条</span>
@@ -106,13 +117,14 @@
 import { ref, computed, onMounted, h } from 'vue'
 import {
   NCard, NSpace, NButton, NDataTable, NModal, NForm, NFormItem,
-  NInput, NInputNumber, NSelect, NSwitch, NDynamicTags, NTag, NPopconfirm, useMessage, useDialog,
+  NInput, NInputNumber, NSelect, NSwitch, NDynamicTags, NTag, NPopconfirm, NDatePicker, useMessage, useDialog,
   NInputGroup,
 } from 'naive-ui'
 import { scheduleApi, type Schedule } from '@/api/schedules'
 import { testCaseApi } from '@/api/testCases'
 import { applicationApi } from '@/api/applications'
 import { fmtTime } from '@/utils/time'
+import { createDateShortcuts, inDateRange, type DateRangeValue } from '@/utils/dateRange'
 
 const message = useMessage()
 const dialog = useDialog()
@@ -125,6 +137,9 @@ const batchDeleting = ref(false)
 const searchKeyword = ref('')
 const searchAppId = ref<string | null>(null)
 const searchEnabled = ref<string | null>(null)
+const searchCreatedRange = ref<DateRangeValue>(null)
+const sortOrder = ref<'ascend' | 'descend'>('descend')
+const dateShortcuts = createDateShortcuts()
 
 const filteredSchedules = computed(() => {
   let list = schedules.value
@@ -141,6 +156,13 @@ const filteredSchedules = computed(() => {
   if (searchEnabled.value !== null) {
     list = list.filter(s => s.enabled === (searchEnabled.value === 'true'))
   }
+  if (searchCreatedRange.value) {
+    list = list.filter(s => inDateRange(s.created_at, searchCreatedRange.value))
+  }
+  list = [...list].sort((a, b) => {
+    const diff = new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+    return sortOrder.value === 'ascend' ? diff : -diff
+  })
   return list
 })
 
@@ -193,12 +215,20 @@ const CRON_PRESETS: Record<string, string> = {
 }
 const cronPreview = computed(() => CRON_PRESETS[form.value.cron_expr] || '(自定义)')
 
-const columns = [
+const columns = computed(() => [
   { type: 'selection' as const, width: 40 },
   { title: '任务名称', key: 'name' },
   { title: '测试用例', key: 'case_id', render: (r: Schedule) => caseMap.value[r.case_id] || r.case_id.slice(0, 8) },
   { title: '目标应用', key: 'target_app_id', render: (r: Schedule) => appMap.value[r.target_app_id] || r.target_app_id.slice(0, 8) },
   { title: 'Cron', key: 'cron_expr', render: (r: Schedule) => h('code', r.cron_expr) },
+  {
+    title: '创建时间',
+    key: 'created_at',
+    width: 160,
+    sorter: true,
+    sortOrder: sortOrder.value,
+    render: (r: Schedule) => fmtTime(r.created_at),
+  },
   {
     title: '状态', key: 'enabled', width: 80,
     render: (r: Schedule) =>
@@ -221,7 +251,20 @@ const columns = [
         }),
       ]),
   },
-]
+])
+
+function clearFilters() {
+  searchKeyword.value = ''
+  searchAppId.value = null
+  searchEnabled.value = null
+  searchCreatedRange.value = null
+}
+
+function onSorterChange(sorter: { columnKey: string; order: 'ascend' | 'descend' | false } | null) {
+  if (sorter?.columnKey === 'created_at') {
+    sortOrder.value = sorter.order || 'descend'
+  }
+}
 
 function openCreate() {
   editing.value = null
@@ -323,12 +366,12 @@ async function load() {
 
 onMounted(async () => {
   const [casesRes, appsRes] = await Promise.all([
-    testCaseApi.list({ limit: 500 }),
+    testCaseApi.listAll(),
     applicationApi.list(),
   ])
-  caseOptions.value = casesRes.data.items.map(c => ({ label: c.name, value: c.id }))
-  caseMap.value = Object.fromEntries(casesRes.data.items.map(c => [c.id, c.name]))
-  caseRecordingCount.value = Object.fromEntries(casesRes.data.items.map(c => [c.id, c.recording_count]))
+  caseOptions.value = casesRes.map(c => ({ label: c.name, value: c.id }))
+  caseMap.value = Object.fromEntries(casesRes.map(c => [c.id, c.name]))
+  caseRecordingCount.value = Object.fromEntries(casesRes.map(c => [c.id, c.recording_count]))
   appOptions.value = appsRes.data.map(a => ({ label: a.name, value: a.id }))
   appMap.value = Object.fromEntries(appsRes.data.map(a => [a.id, a.name]))
   await load()

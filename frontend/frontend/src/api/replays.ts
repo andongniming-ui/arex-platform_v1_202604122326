@@ -154,14 +154,31 @@ export interface ResultSummary {
 
 export const replayApi = {
   create: (data: ReplayJobCreate) => client.post<ReplayJob>('/replays', data),
-  list: (params?: { case_id?: string; app_id?: string; status?: string; limit?: number; offset?: number }) =>
+  list: (params?: {
+    keyword?: string
+    case_id?: string
+    app_id?: string
+    status?: string
+    created_after?: string
+    created_before?: string
+    limit?: number
+    offset?: number
+  }) =>
     client.get<PagedResult<ReplayJob>>('/replays', { params }),
   get: (id: string) => client.get<ReplayJob>(`/replays/${id}`),
   cancel: (id: string) => client.put(`/replays/${id}/cancel`),
   delete: (id: string) => client.delete(`/replays/${id}`),
   batchDelete: (ids: string[]) => client.delete('/replays/batch', { data: { ids } }),
   summary: (id: string) => client.get<ResultSummary>(`/replays/${id}/summary`),
-  results: (id: string, params?: { status?: string; limit?: number; offset?: number }) =>
+  results: (id: string, params?: {
+    status?: string
+    replayed_after?: string
+    replayed_before?: string
+    sort_by?: string
+    sort_order?: string
+    limit?: number
+    offset?: number
+  }) =>
     client.get<PagedResult<ReplayResult>>(`/replays/${id}/results`, { params }),
   getResult: (jobId: string, resultId: string) =>
     client.get<ReplayResult>(`/replays/${jobId}/results/${resultId}`),

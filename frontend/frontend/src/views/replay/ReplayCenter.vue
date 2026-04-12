@@ -15,6 +15,7 @@
             v-model:value="form.target_app_id"
             :options="appOptions"
             placeholder="选择目标应用"
+            @update:value="onTargetAppChange"
           />
         </n-form-item>
         <n-form-item label="环境标签">
@@ -401,6 +402,7 @@ function removeHeaderTransform(i: number) {
 
 const caseOptions = ref<{ label: string; value: string }[]>([])
 const appOptions = ref<{ label: string; value: string }[]>([])
+const appMap = ref<Record<string, any>>({})
 const caseRecordingCount = ref<Record<string, number>>({})
 const submitting = ref(false)
 
@@ -417,17 +419,24 @@ async function loadAppDefaults() {
   if (!form.value.target_app_id) return
   loadingDefaults.value = true
   try {
-    const apps = await applicationApi.list()
-    const app = apps.data.find(a => a.id === form.value.target_app_id)
+    const app = appMap.value[form.value.target_app_id]
     if (!app) return
+    form.value.ignore_fields = []
+    form.value.diff_rules = []
+    form.value.assertions = []
+    form.value.perf_threshold_ms = undefined
     if (app.default_ignore_fields?.length) form.value.ignore_fields = [...app.default_ignore_fields]
     if (app.default_diff_rules?.length) form.value.diff_rules = app.default_diff_rules as DiffRule[]
     if (app.default_assertions?.length) form.value.assertions = app.default_assertions as AssertionRule[]
-    if (app.default_perf_threshold_ms) form.value.perf_threshold_ms = app.default_perf_threshold_ms
+    if (app.default_perf_threshold_ms != null) form.value.perf_threshold_ms = app.default_perf_threshold_ms
     message.success('已加载应用默认配置')
   } finally {
     loadingDefaults.value = false
   }
+}
+
+function onTargetAppChange() {
+  suggestResult.value = null
 }
 
 async function suggestFields() {
@@ -497,12 +506,13 @@ async function startReplay() {
 
 onMounted(async () => {
   await Promise.all([
-    testCaseApi.list({ limit: 500 }).then(casesRes => {
-      caseOptions.value = casesRes.data.items.map(c => ({ label: c.name, value: c.id }))
-      caseRecordingCount.value = Object.fromEntries(casesRes.data.items.map(c => [c.id, c.recording_count]))
+    testCaseApi.listAll().then(items => {
+      caseOptions.value = items.map(c => ({ label: c.name, value: c.id }))
+      caseRecordingCount.value = Object.fromEntries(items.map(c => [c.id, c.recording_count]))
     }).catch(() => {}),
     applicationApi.list().then(appsRes => {
       appOptions.value = appsRes.data.map(a => ({ label: a.name, value: a.id }))
+      appMap.value = Object.fromEntries(appsRes.data.map(a => [a.id, a]))
     }).catch(() => {}),
   ])
 })

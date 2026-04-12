@@ -96,15 +96,35 @@
           style="width: 150px"
           @update:value="loadResults"
         />
+        <n-date-picker
+          v-model:value="filterReplayedRange"
+          type="datetimerange"
+          clearable
+          :shortcuts="dateShortcuts"
+          style="width: 320px"
+          start-placeholder="结果开始时间"
+          end-placeholder="结果结束时间"
+          @update:value="loadResults"
+          @clear="loadResults"
+        />
+        <n-button size="small" @click="clearFilters">清空筛选</n-button>
         <n-button @click="loadResults">刷新</n-button>
         <!-- P2-2: 保存为用例 -->
-        <n-button type="primary" size="small" @click="showSaveDialog = true" :disabled="!hasFailResults">
+        <n-button type="primary" size="small" @click="openSaveDialog" :disabled="!hasFailResults" :loading="loadingFailedResults">
           保存失败接口为用例
         </n-button>
       </n-space>
 
       <n-empty v-if="!loading && results.length === 0" description="暂无结果数据" style="padding:32px 0" />
-      <n-data-table v-else :columns="columns" :data="results" :loading="loading" :scroll-x="1100" />
+      <n-data-table
+        v-else
+        :columns="columns"
+        :data="results"
+        :loading="loading"
+        :scroll-x="1100"
+        remote
+        @update:sorter="onSorterChange"
+      />
 
       <n-space justify="end" align="center" style="margin-top:12px">
         <span style="font-size:13px;color:#666">共 {{ resultTotal }} 条</span>
@@ -197,10 +217,11 @@ import { ref, reactive, onMounted, h, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   NCard, NSpace, NStatistic, NDataTable, NSelect, NButton,
-  NModal, NGrid, NGi, NTag, NPagination, NEmpty,
+  NModal, NGrid, NGi, NTag, NPagination, NEmpty, NDatePicker,
   NForm, NFormItem, NCheckbox, NCheckboxGroup, useMessage,
 } from 'naive-ui'
 import { replayApi, type ReplayJob, type ReplayResult, type ResultSummary, type FailureAnalysis } from '@/api/replays'
+import { createDateShortcuts, type DateRangeValue } from '@/utils/dateRange'
 import { fmtTime } from '@/utils/time'
 
 const route = useRoute()
@@ -213,6 +234,9 @@ const results = ref<ReplayResult[]>([])
 const loading = ref(false)
 const filterStatus = ref<string | null>(null)
 const filterCategory = ref<string | null>(null)
+const filterReplayedRange = ref<DateRangeValue>(null)
+const sortOrder = ref<'ascend' | 'descend'>('descend')
+const dateShortcuts = createDateShortcuts()
 const showDiff = ref(false)
 const selectedResult = ref<ReplayResult | null>(null)
 const analysis = ref<FailureAnalysis | null>(null)
@@ -220,13 +244,14 @@ const analysis = ref<FailureAnalysis | null>(null)
 // P2-2: 保存为用例相关变量
 const showSaveDialog = ref(false)
 const saving = ref(false)
+const loadingFailedResults = ref(false)
 const saveForm = reactive({
   case_name: '',
   case_description: '',
   recording_ids: [] as string[],
 })
-const failedResults = computed(() => results.value.filter(r => r.status === 'FAIL' || r.status === 'ERROR'))
-const hasFailResults = computed(() => failedResults.value.length > 0)
+const failedResults = ref<ReplayResult[]>([])
+const hasFailResults = computed(() => ((summary.value?.fail_count || 0) + (summary.value?.error_count || 0)) > 0)
 
 const categoryLabels: Record<string, string> = {
   ENVIRONMENT: '环境问题',
@@ -290,7 +315,7 @@ const failureCategoryColor: Record<string, string> = {
   UNKNOWN: '#999',
 }
 
-const columns = [
+const columns = computed(() => [
   {
     title: '接口',
     key: 'recording_path',
@@ -351,7 +376,13 @@ const columns = [
   },
   { title: '状态码', key: 'replayed_status_code', render: (r: ReplayResult) => r.replayed_status_code ?? '-' },
   { title: '耗时(ms)', key: 'duration_ms' },
-  { title: '时间', key: 'replayed_at', render: (r: ReplayResult) => fmtTime(r.replayed_at) },
+  {
+    title: '时间',
+    key: 'replayed_at',
+    sorter: true,
+    sortOrder: sortOrder.value,
+    render: (r: ReplayResult) => fmtTime(r.replayed_at),
+  },
   {
     title: '对比',
     key: 'diff',
@@ -361,7 +392,7 @@ const columns = [
         onClick: () => { selectedResult.value = r; showDiff.value = true },
       }, () => '查看 Diff'),
   },
-]
+])
 
 function formatJson(text?: string | null): string {
   if (!text) return ''
@@ -398,39 +429,95 @@ async function saveToTestCase() {
   }
 }
 
+async function openSaveDialog() {
+  if (!hasFailResults.value) return
+  loadingFailedResults.value = true
+  try {
+    const [failItems, errorItems] = await Promise.all([
+      fetchAllResults({ status: 'FAIL', sort_by: 'replayed_at', sort_order: 'desc' }),
+      fetchAllResults({ status: 'ERROR', sort_by: 'replayed_at', sort_order: 'desc' }),
+    ])
+    const merged = [...failItems, ...errorItems]
+    const deduped = new Map<string, ReplayResult>()
+    for (const item of merged) {
+      deduped.set(item.recording_id, item)
+    }
+    failedResults.value = [...deduped.values()]
+    saveForm.recording_ids = failedResults.value.map(item => item.recording_id)
+    showSaveDialog.value = true
+  } catch (e: any) {
+    message.error(e.response?.data?.detail || '加载失败接口失败')
+  } finally {
+    loadingFailedResults.value = false
+  }
+}
+
 async function loadResults() {
   resultPagination.page = 1
   await loadResultsPage()
 }
 
+function clearFilters() {
+  filterStatus.value = null
+  filterCategory.value = null
+  filterReplayedRange.value = null
+  sortOrder.value = 'descend'
+  loadResults()
+}
+
+function onSorterChange(sorter: { columnKey?: string; order?: 'ascend' | 'descend' | false } | null) {
+  sortOrder.value = sorter?.columnKey === 'replayed_at' && sorter.order ? sorter.order : 'descend'
+  resultPagination.page = 1
+  loadResultsPage()
+}
+
 async function loadResultsPage() {
   loading.value = true
   try {
+    const queryParams = {
+      status: filterStatus.value || undefined,
+      replayed_after: filterReplayedRange.value ? new Date(filterReplayedRange.value[0]).toISOString() : undefined,
+      replayed_before: filterReplayedRange.value ? new Date(filterReplayedRange.value[1]).toISOString() : undefined,
+      sort_by: 'replayed_at',
+      sort_order: sortOrder.value === 'ascend' ? 'asc' : 'desc',
+    } as const
+
     // 如果有筛选分类，先从分析结果中获取对应分类的结果ID
     if (filterCategory.value && analysis.value) {
       const catResults = analysis.value.categories[filterCategory.value as keyof typeof analysis.value.categories]?.results || []
-      // 分页处理
+      const statusFiltered = filterStatus.value
+        ? catResults.filter(r => r.status === filterStatus.value)
+        : catResults
+      const timeFiltered = filterReplayedRange.value
+        ? statusFiltered.filter((r) => {
+            if (!r.replayed_at) return false
+            const ts = new Date(r.replayed_at).getTime()
+            return ts >= filterReplayedRange.value![0] && ts <= filterReplayedRange.value![1]
+          })
+        : statusFiltered
+      const sorted = [...timeFiltered].sort((a, b) => {
+        const left = a.replayed_at ? new Date(a.replayed_at).getTime() : 0
+        const right = b.replayed_at ? new Date(b.replayed_at).getTime() : 0
+        return sortOrder.value === 'ascend' ? left - right : right - left
+      })
       const start = (resultPagination.page - 1) * resultPagination.pageSize
-      const pagedIds = catResults.slice(start, start + resultPagination.pageSize).map(r => r.id)
+      const pagedIds = sorted.slice(start, start + resultPagination.pageSize).map(r => r.id)
       
       if (pagedIds.length === 0) {
         results.value = []
-        resultTotal.value = catResults.length
+        resultTotal.value = sorted.length
         return
       }
       
       // 获取完整结果详情
-      const allRes = await replayApi.results(jobId, {
-        status: undefined,
-        limit: 1000,
-        offset: 0,
-      })
-      const filteredResults = allRes.data.items.filter(r => pagedIds.includes(r.id))
-      results.value = filteredResults
-      resultTotal.value = catResults.length
+      const allItems = await fetchAllResults(queryParams)
+      const filteredResults = allItems.filter(r => pagedIds.includes(r.id))
+      const resultMap = new Map(filteredResults.map(item => [item.id, item]))
+      results.value = pagedIds.map(id => resultMap.get(id)).filter(Boolean) as ReplayResult[]
+      resultTotal.value = sorted.length
     } else {
       const res = await replayApi.results(jobId, {
-        status: filterStatus.value || undefined,
+        ...queryParams,
         limit: resultPagination.pageSize,
         offset: (resultPagination.page - 1) * resultPagination.pageSize,
       })
@@ -440,6 +527,31 @@ async function loadResultsPage() {
   } finally {
     loading.value = false
   }
+}
+
+async function fetchAllResults(baseParams: {
+  status?: string
+  replayed_after?: string
+  replayed_before?: string
+  sort_by?: string
+  sort_order?: string
+}) {
+  const pageSize = 200
+  let offset = 0
+  let total = Infinity
+  const items: ReplayResult[] = []
+  while (offset < total) {
+    const res = await replayApi.results(jobId, {
+      ...baseParams,
+      limit: pageSize,
+      offset,
+    })
+    items.push(...res.data.items)
+    total = res.data.total
+    offset += pageSize
+    if (res.data.items.length === 0) break
+  }
+  return items
 }
 
 onMounted(async () => {

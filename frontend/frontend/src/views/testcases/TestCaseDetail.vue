@@ -487,19 +487,19 @@ async function openAddModal() {
   pickDateRange.value = null
   try {
     const [recsRes, appsRes, sessRes] = await Promise.all([
-      recordingApi.list({ limit: 500 }),
+      recordingApi.listAll(),
       applicationApi.list(),
-      sessionApi.list(undefined, 200),
+      sessionApi.listAll(),
     ])
     appOptions.value = appsRes.data.map((a: any) => ({ label: a.name, value: a.id }))
     appMap.value = Object.fromEntries(appsRes.data.map((a: any) => [a.id, a.name]))
-    allSessions.value = sessRes.data.items
-    pickSessionOptions.value = sessRes.data.items.map((s: Session) => ({
+    allSessions.value = sessRes
+    pickSessionOptions.value = sessRes.map((s: Session) => ({
       label: `${s.name || s.id.slice(0, 8)} (${s.status})`,
       value: s.id,
     }))
     // Exclude recordings already in this case
-    pickList.value = recsRes.data.items.filter((r: Recording) => !existingIds.value.has(r.id))
+    pickList.value = recsRes.filter((r: Recording) => !existingIds.value.has(r.id))
   } finally {
     pickLoading.value = false
   }

@@ -39,6 +39,7 @@ class Application(Base):
     # Recording controls
     sample_rate: Mapped[float] = mapped_column(Float, default=1.0)     # 0.0–1.0, 1.0 = record all
     desensitize_rules: Mapped[list | None] = mapped_column(JSON)        # [{field, action, ...}]
+    operation_id_tags: Mapped[list | None] = mapped_column(JSON)
 
     # XML request template — used as default body when replay lacks request body
     xml_request_template: Mapped[str | None] = mapped_column(Text)

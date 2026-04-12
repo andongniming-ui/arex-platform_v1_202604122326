@@ -1,4 +1,5 @@
 import asyncio
+import json
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
@@ -15,6 +16,17 @@ from datetime import datetime
 router = APIRouter(prefix="/applications", tags=["applications"])
 
 
+def _normalize_application(app: Application) -> Application:
+    raw_tags = getattr(app, "operation_id_tags", None)
+    if isinstance(raw_tags, str):
+        try:
+            parsed = json.loads(raw_tags)
+        except Exception:
+            parsed = [part.strip() for part in raw_tags.split(",") if part.strip()]
+        app.operation_id_tags = parsed if isinstance(parsed, list) else None
+    return app
+
+
 @router.post("", response_model=ApplicationOut, status_code=201)
 async def create_application(body: ApplicationCreate, db: AsyncSession = Depends(get_db)):
     app = Application(id=str(uuid.uuid4()), **body.model_dump())
@@ -25,13 +37,13 @@ async def create_application(body: ApplicationCreate, db: AsyncSession = Depends
         await db.rollback()
         raise HTTPException(409, f"Application name '{body.name}' already exists")
     await db.refresh(app)
-    return app
+    return _normalize_application(app)
 
 
 @router.get("", response_model=list[ApplicationOut])
 async def list_applications(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Application).order_by(Application.created_at.desc()))
-    return result.scalars().all()
+    return [_normalize_application(app) for app in result.scalars().all()]
 
 
 @router.get("/{app_id}", response_model=ApplicationOut)
@@ -39,7 +51,7 @@ async def get_application(app_id: str, db: AsyncSession = Depends(get_db)):
     app = await db.get(Application, app_id)
     if not app:
         raise HTTPException(404, "Application not found")
-    return app
+    return _normalize_application(app)
 
 
 @router.put("/{app_id}", response_model=ApplicationOut)
@@ -58,7 +70,7 @@ async def update_application(
         await db.rollback()
         raise HTTPException(409, f"Application name already exists")
     await db.refresh(app)
-    return app
+    return _normalize_application(app)
 
 
 @router.delete("/{app_id}", status_code=204)

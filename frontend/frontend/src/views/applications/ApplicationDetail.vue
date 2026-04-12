@@ -28,11 +28,22 @@
       </template>
 
       <n-descriptions bordered :column="2">
+        <n-descriptions-item label="应用说明">{{ app.description || '-' }}</n-descriptions-item>
         <n-descriptions-item label="SSH Host">{{ app.ssh_host }}:{{ app.ssh_port }}</n-descriptions-item>
         <n-descriptions-item label="SSH User">{{ app.ssh_user }}</n-descriptions-item>
         <n-descriptions-item label="JAR 名称">{{ app.java_jar_name || '-' }}</n-descriptions-item>
         <n-descriptions-item label="JVM PID">{{ app.java_pid || '-' }}</n-descriptions-item>
         <n-descriptions-item label="应用端口">{{ app.repeater_port }}</n-descriptions-item>
+        <n-descriptions-item label="Sandbox 端口">{{ app.sandbox_port }}</n-descriptions-item>
+        <n-descriptions-item label="采样率">{{ Math.round((app.sample_rate ?? 1) * 100) }}%</n-descriptions-item>
+        <n-descriptions-item label="接口识别字段">
+          {{ app.operation_id_tags?.length ? app.operation_id_tags.join(', ') : '默认内置字段' }}
+        </n-descriptions-item>
+        <n-descriptions-item label="默认忽略字段">
+          {{ app.default_ignore_fields?.length ? app.default_ignore_fields.join(', ') : '-' }}
+        </n-descriptions-item>
+        <n-descriptions-item label="Sandbox 路径" :span="2">{{ app.sandbox_home }}</n-descriptions-item>
+        <n-descriptions-item label="录制数据目录" :span="2">{{ app.repeater_data_dir }}</n-descriptions-item>
         <n-descriptions-item label="最后心跳">{{ fmtTime(app.last_heartbeat) || '-' }}</n-descriptions-item>
       </n-descriptions>
     </n-card>
@@ -148,8 +159,11 @@
     </n-card>
 
   <!-- Edit Modal -->
-  <n-modal v-model:show="showEdit" preset="dialog" title="编辑应用" style="width: 560px">
+  <n-modal v-model:show="showEdit" preset="dialog" title="编辑应用" style="width: 760px">
     <n-form :model="editForm" label-placement="left" label-width="120px">
+      <n-form-item label="应用说明">
+        <n-input v-model:value="editForm.description" placeholder="例如：PL2 录制源 / VT 缺陷环境" />
+      </n-form-item>
       <n-form-item label="SSH Host" required>
         <n-input v-model:value="editForm.ssh_host" placeholder="192.168.1.100" />
       </n-form-item>
@@ -169,8 +183,39 @@
         <n-input v-model:value="editForm.java_jar_name" placeholder="my-service.jar" />
       </n-form-item>
       <n-form-item label="应用端口">
-        <n-input-number v-model:value="editForm.repeater_port" />
+        <n-input-number v-model:value="editForm.repeater_port" :min="1" :max="65535" />
       </n-form-item>
+      <n-form-item label="高级配置">
+        <n-button tertiary size="small" @click="showAdvancedEditFields = !showAdvancedEditFields">
+          {{ showAdvancedEditFields ? '收起高级配置' : '展开高级配置' }}
+        </n-button>
+      </n-form-item>
+      <template v-if="showAdvancedEditFields">
+        <n-form-item label="SSH 端口">
+          <n-input-number v-model:value="editForm.ssh_port" :min="1" :max="65535" />
+        </n-form-item>
+        <n-form-item label="Sandbox 端口">
+          <n-input-number v-model:value="editForm.sandbox_port" :min="1" :max="65535" />
+        </n-form-item>
+        <n-form-item label="Sandbox 路径">
+          <n-input v-model:value="editForm.sandbox_home" placeholder="/root/.sandbox" />
+        </n-form-item>
+        <n-form-item label="录制数据目录">
+          <n-input v-model:value="editForm.repeater_data_dir" placeholder="/root/.sandbox-module/repeater-data/record" />
+        </n-form-item>
+        <n-form-item label="采样率">
+          <n-space align="center">
+            <n-input-number v-model:value="editForm.sample_rate_percent" :min="1" :max="100" />
+            <span>%</span>
+          </n-space>
+        </n-form-item>
+        <n-form-item label="接口识别字段">
+          <n-dynamic-tags v-model:value="editForm.operation_id_tags" />
+        </n-form-item>
+        <n-form-item label="默认忽略字段">
+          <n-dynamic-tags v-model:value="editForm.default_ignore_fields" />
+        </n-form-item>
+      </template>
     </n-form>
     <template #action>
       <n-button @click="showEdit = false">取消</n-button>
@@ -253,6 +298,7 @@ const savingControls = ref(false)
 const pushing = ref(false)
 const showEdit = ref(false)
 const savingEdit = ref(false)
+const showAdvancedEditFields = ref(false)
 
 // Recording controls
 const sampleRatePercent = ref(100)
@@ -345,35 +391,59 @@ const authOptions = [
 ]
 
 const editForm = ref({
+  description: '',
   ssh_host: '',
+  ssh_port: 22,
   ssh_user: '',
   ssh_auth_type: 'KEY' as 'KEY' | 'PASSWORD',
   ssh_key_path: '',
   ssh_password: '',
   java_jar_name: '',
+  sandbox_port: 39393,
   repeater_port: 8080,
+  sandbox_home: '/root/.sandbox',
+  repeater_data_dir: '/root/.sandbox-module/repeater-data/record',
+  sample_rate_percent: 100,
+  operation_id_tags: [] as string[],
+  default_ignore_fields: [] as string[],
 })
 
 function openEdit() {
   if (!app.value) return
   editForm.value = {
+    description: app.value.description || '',
     ssh_host: app.value.ssh_host,
+    ssh_port: app.value.ssh_port ?? 22,
     ssh_user: app.value.ssh_user,
     ssh_auth_type: (app.value.ssh_auth_type as 'KEY' | 'PASSWORD') || 'KEY',
     ssh_key_path: app.value.ssh_key_path || '',
     ssh_password: app.value.ssh_password || '',
     java_jar_name: app.value.java_jar_name || '',
+    sandbox_port: app.value.sandbox_port ?? 39393,
     repeater_port: app.value.repeater_port ?? 8080,
+    sandbox_home: app.value.sandbox_home || '/root/.sandbox',
+    repeater_data_dir: app.value.repeater_data_dir || '/root/.sandbox-module/repeater-data/record',
+    sample_rate_percent: Math.round((app.value.sample_rate ?? 1) * 100),
+    operation_id_tags: [...(app.value.operation_id_tags ?? [])],
+    default_ignore_fields: [...(app.value.default_ignore_fields ?? [])],
   }
+  showAdvancedEditFields.value = true
   showEdit.value = true
 }
 
 async function handleSaveEdit() {
   savingEdit.value = true
   try {
-    const payload: any = { ...editForm.value }
+    const payload: any = {
+      ...editForm.value,
+      sample_rate: (editForm.value.sample_rate_percent || 100) / 100,
+      operation_id_tags: editForm.value.operation_id_tags.length ? editForm.value.operation_id_tags : undefined,
+      default_ignore_fields: editForm.value.default_ignore_fields.length ? editForm.value.default_ignore_fields : undefined,
+    }
+    delete payload.sample_rate_percent
     if (!payload.ssh_key_path) delete payload.ssh_key_path
     if (!payload.ssh_password) delete payload.ssh_password
+    if (!payload.description) delete payload.description
     const res = await applicationApi.update(appId, payload)
     app.value = res.data
     message.success('应用更新成功')

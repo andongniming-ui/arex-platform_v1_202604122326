@@ -1,7 +1,7 @@
 <template>
   <n-card title="回放历史">
     <template #header-extra>
-      <n-space align="center">
+      <n-space align="center" wrap>
         <n-input
           v-model:value="filterKeyword"
           placeholder="搜索用例名称"
@@ -35,6 +35,18 @@
           style="width: 130px"
           @update:value="onFilterChange"
         />
+        <n-date-picker
+          v-model:value="filterCreatedRange"
+          type="datetimerange"
+          clearable
+          :shortcuts="dateShortcuts"
+          style="width: 320px"
+          start-placeholder="回放开始时间"
+          end-placeholder="回放结束时间"
+          @update:value="onFilterChange"
+          @clear="onFilterChange"
+        />
+        <n-button size="small" @click="clearFilters">清空筛选</n-button>
         <n-button size="small" @click="loadJobs">刷新</n-button>
       </n-space>
     </template>
@@ -50,6 +62,7 @@
       :row-key="(r: any) => r.id"
       :checked-row-keys="selectedIds"
       @update:checked-row-keys="selectedIds = $event as string[]"
+      @update:sorter="onSorterChange"
     />
     <n-space v-if="selectedIds.length > 0" align="center" style="margin-top:10px">
       <span>已选 {{ selectedIds.length }} 条</span>
@@ -59,15 +72,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, h } from 'vue'
+import { ref, reactive, computed, onMounted, h } from 'vue'
 import { useRouter } from 'vue-router'
 import {
-  NCard, NSpace, NDataTable, NTag, NButton, NInput, NSelect, NPopconfirm, useMessage, useDialog,
+  NCard, NSpace, NDataTable, NTag, NButton, NInput, NSelect, NPopconfirm, NDatePicker, useMessage, useDialog,
 } from 'naive-ui'
 import { replayApi, type ReplayJob, type ReplayJobCreate } from '@/api/replays'
 import { fmtTime } from '@/utils/time'
 import { testCaseApi } from '@/api/testCases'
 import { applicationApi } from '@/api/applications'
+import { createDateShortcuts, type DateRangeValue } from '@/utils/dateRange'
 
 const router = useRouter()
 const message = useMessage()
@@ -89,6 +103,9 @@ const filterKeyword = ref('')
 const filterCaseId = ref<string | null>(null)
 const filterAppId = ref<string | null>(null)
 const filterStatus = ref<string | null>(null)
+const filterCreatedRange = ref<DateRangeValue>(null)
+const sortOrder = ref<'ascend' | 'descend'>('descend')
+const dateShortcuts = createDateShortcuts()
 const statusOptions = [
   { label: '已完成', value: 'DONE' },
   { label: '运行中', value: 'RUNNING' },
@@ -122,7 +139,7 @@ const statusLabel: Record<string, string> = {
   DONE: '已完成', RUNNING: '运行中', PENDING: '待处理', FAILED: '失败', CANCELLED: '已取消',
 }
 
-const jobColumns = [
+const jobColumns = computed(() => [
   { type: 'selection' as const, width: 40 },
   {
     title: '用例',
@@ -167,7 +184,13 @@ const jobColumns = [
         ? h(NTag, { size: 'small', type: 'warning' }, () => 'Mock')
         : h('span', { style: 'color:#ccc' }, '-'),
   },
-  { title: '创建时间', key: 'created_at', render: (r: ReplayJob) => fmtTime(r.created_at) },
+  {
+    title: '创建时间',
+    key: 'created_at',
+    sorter: true,
+    sortOrder: sortOrder.value,
+    render: (r: ReplayJob) => fmtTime(r.created_at),
+  },
   {
     title: '操作',
     key: 'actions',
@@ -191,7 +214,7 @@ const jobColumns = [
         }),
       ]),
   },
-]
+])
 
 // 当筛选条件变化时重置到第一页再加载
 function onFilterChange() {
@@ -200,29 +223,41 @@ function onFilterChange() {
   loadJobs()
 }
 
+function clearFilters() {
+  filterKeyword.value = ''
+  filterCaseId.value = null
+  filterAppId.value = null
+  filterStatus.value = null
+  filterCreatedRange.value = null
+  onFilterChange()
+}
+
+function onSorterChange(sorter: { columnKey: string; order: 'ascend' | 'descend' | false } | null) {
+  if (sorter?.columnKey === 'created_at') {
+    sortOrder.value = sorter.order || 'descend'
+    loadJobs()
+  }
+}
+
 async function loadJobs() {
   jobsLoading.value = true
   try {
-    // case_id: 若有关键字则不传 case_id（本地过滤），否则精确传
     const res = await replayApi.list({
-      case_id: (!filterKeyword.value && filterCaseId.value) ? filterCaseId.value : undefined,
+      keyword: filterKeyword.value.trim() || undefined,
+      case_id: filterCaseId.value || undefined,
       app_id: filterAppId.value || undefined,
       status: filterStatus.value || undefined,
-      limit: filterKeyword.value ? 200 : jobPagination.pageSize,
-      offset: filterKeyword.value ? 0 : (jobPagination.page - 1) * jobPagination.pageSize,
+      created_after: filterCreatedRange.value ? new Date(filterCreatedRange.value[0]).toISOString() : undefined,
+      created_before: filterCreatedRange.value ? new Date(filterCreatedRange.value[1]).toISOString() : undefined,
+      limit: jobPagination.pageSize,
+      offset: (jobPagination.page - 1) * jobPagination.pageSize,
     })
-    // 关键字在客户端过滤（匹配用例名称）
-    if (filterKeyword.value) {
-      const kw = filterKeyword.value.toLowerCase()
-      jobs.value = res.data.items.filter(j => {
-        const caseName = (caseMap.value[j.case_id] || j.case_id).toLowerCase()
-        return caseName.includes(kw)
-      })
-      jobTotal.value = jobs.value.length
-    } else {
-      jobs.value = res.data.items
-      jobTotal.value = res.data.total
-    }
+    jobs.value = res.data.items
+    jobTotal.value = res.data.total
+    jobs.value = [...jobs.value].sort((a, b) => {
+      const diff = new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      return sortOrder.value === 'ascend' ? diff : -diff
+    })
     jobPagination.itemCount = jobTotal.value
   } finally {
     jobsLoading.value = false
@@ -293,9 +328,9 @@ async function deleteSelected() {
 
 onMounted(async () => {
   await Promise.all([
-    testCaseApi.list({ limit: 500 }).then(casesRes => {
-      caseOptions.value = casesRes.data.items.map(c => ({ label: c.name, value: c.id }))
-      caseMap.value = Object.fromEntries(casesRes.data.items.map(c => [c.id, c.name]))
+    testCaseApi.listAll().then(items => {
+      caseOptions.value = items.map(c => ({ label: c.name, value: c.id }))
+      caseMap.value = Object.fromEntries(items.map(c => [c.id, c.name]))
     }).catch(() => {}),
     applicationApi.list().then(appsRes => {
       appOptions.value = appsRes.data.map(a => ({ label: a.name, value: a.id }))

@@ -2,13 +2,23 @@
   <n-space vertical :size="16">
     <n-card title="回放套件">
       <template #header-extra>
-        <n-space>
+        <n-space wrap>
           <n-input
             v-model:value="searchSuiteName"
             placeholder="搜索套件名称"
             clearable
             style="width: 180px"
           />
+          <n-date-picker
+            v-model:value="searchSuiteCreatedRange"
+            type="datetimerange"
+            clearable
+            :shortcuts="dateShortcuts"
+            style="width: 320px"
+            start-placeholder="创建开始时间"
+            end-placeholder="创建结束时间"
+          />
+          <n-button size="small" @click="clearFilters">清空筛选</n-button>
           <n-button type="primary" size="small" @click="openCreate">+ 新建套件</n-button>
         </n-space>
       </template>
@@ -21,6 +31,7 @@
         :loading="loading"
         :row-key="(r: Suite) => r.id"
         :pagination="suitePagination"
+        @update:sorter="onSorterChange"
       />
     </n-card>
 
@@ -128,7 +139,7 @@ import { ref, reactive, computed, h, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   NCard, NSpace, NButton, NDataTable, NModal, NForm, NFormItem,
-  NInput, NInputNumber, NSelect, NTag, NTabs, NTabPane,
+  NInput, NInputNumber, NSelect, NTag, NTabs, NTabPane, NDatePicker,
   NDivider, NPopconfirm, useMessage,
 } from 'naive-ui'
 
@@ -136,6 +147,7 @@ import { suiteApi, type Suite, type SuiteRun } from '@/api/suites'
 import { applicationApi } from '@/api/applications'
 import { testCaseApi } from '@/api/testCases'
 import { fmtTime } from '@/utils/time'
+import { createDateShortcuts, inDateRange, type DateRangeValue } from '@/utils/dateRange'
 
 const router = useRouter()
 const message = useMessage()
@@ -174,10 +186,23 @@ const form = ref({
 })
 
 const searchSuiteName = ref('')
+const searchSuiteCreatedRange = ref<DateRangeValue>(null)
+const sortOrder = ref<'ascend' | 'descend'>('descend')
+const dateShortcuts = createDateShortcuts()
 const filteredSuites = computed(() => {
-  if (!searchSuiteName.value) return suites.value
-  const kw = searchSuiteName.value.toLowerCase()
-  return suites.value.filter(s => s.name.toLowerCase().includes(kw))
+  let list = suites.value
+  if (searchSuiteName.value) {
+    const kw = searchSuiteName.value.toLowerCase()
+    list = list.filter(s => s.name.toLowerCase().includes(kw))
+  }
+  if (searchSuiteCreatedRange.value) {
+    list = list.filter(s => inDateRange(s.created_at, searchSuiteCreatedRange.value))
+  }
+  list = [...list].sort((a, b) => {
+    const diff = new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+    return sortOrder.value === 'ascend' ? diff : -diff
+  })
+  return list
 })
 
 const suitePagination = reactive({
@@ -200,19 +225,30 @@ const runsPagination = reactive({
 
 const passRateColor = (rate: number) => rate >= 0.9 ? '#18a058' : rate >= 0.6 ? '#f0a020' : '#d03050'
 
-const suiteColumns = [
+const suiteColumns = computed(() => [
   { title: '名称', key: 'name' },
   {
     title: '用例数', key: 'case_count',
     render: (r: Suite) => r.case_ids?.length ?? 0,
   },
   { title: '默认环境', key: 'default_environment', render: (r: Suite) => r.default_environment || '-' },
-  { title: '创建时间', key: 'created_at', render: (r: Suite) => fmtTime(r.created_at) },
+  { title: '创建时间', key: 'created_at', sorter: true, sortOrder: sortOrder.value, render: (r: Suite) => fmtTime(r.created_at) },
   {
     title: '操作', key: 'actions', width: 120,
     render: (r: Suite) => h(NButton, { size: 'small', onClick: () => openSuite(r) }, () => '查看/执行'),
   },
-]
+])
+
+function clearFilters() {
+  searchSuiteName.value = ''
+  searchSuiteCreatedRange.value = null
+}
+
+function onSorterChange(sorter: { columnKey: string; order: 'ascend' | 'descend' | false } | null) {
+  if (sorter?.columnKey === 'created_at') {
+    sortOrder.value = sorter.order || 'descend'
+  }
+}
 
 const runColumns = [
   {
@@ -388,11 +424,11 @@ async function removeCase(caseId: string) {
 onMounted(async () => {
   const [appsRes, casesRes] = await Promise.all([
     applicationApi.list(),
-    testCaseApi.list({ limit: 500 }),
+    testCaseApi.listAll(),
   ])
   appOptions.value = appsRes.data.map(a => ({ label: a.name, value: a.id }))
-  caseOptions.value = casesRes.data.items.map(c => ({ label: c.name, value: c.id }))
-  caseMap.value = Object.fromEntries(casesRes.data.items.map(c => [c.id, c.name]))
+  caseOptions.value = casesRes.map(c => ({ label: c.name, value: c.id }))
+  caseMap.value = Object.fromEntries(casesRes.map(c => [c.id, c.name]))
   await loadSuites()
 })
 </script>

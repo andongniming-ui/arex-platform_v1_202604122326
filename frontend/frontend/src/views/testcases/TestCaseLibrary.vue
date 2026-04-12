@@ -1,7 +1,7 @@
 ﻿<template>
   <n-card title="测试用例库">
     <template #header-extra>
-      <n-space>
+      <n-space wrap>
         <n-select
           v-model:value="filterAppId"
           :options="appOptions"
@@ -18,6 +18,18 @@
           @keyup.enter="onFilter"
           @clear="onFilter"
         />
+        <n-date-picker
+          v-model:value="filterCreatedRange"
+          type="datetimerange"
+          clearable
+          :shortcuts="dateShortcuts"
+          style="width: 320px"
+          start-placeholder="创建开始时间"
+          end-placeholder="创建结束时间"
+          @update:value="onFilter"
+          @clear="onFilter"
+        />
+        <n-button @click="clearFilters">清空筛选</n-button>
         <n-button @click="onFilter">搜索</n-button>
         <n-button type="primary" @click="openCreate">+ 新建用例</n-button>
       </n-space>
@@ -32,6 +44,7 @@
       :row-key="(r: any) => r.id"
       :checked-row-keys="selectedIds"
       @update:checked-row-keys="selectedIds = $event as string[]"
+      @update:sorter="onSorterChange"
     />
     <n-space v-if="selectedIds.length > 0" align="center" style="margin-top:10px">
       <span>已选 {{ selectedIds.length }} 条</span>
@@ -101,15 +114,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, reactive, onMounted, h } from 'vue'
+import { ref, computed, reactive, onMounted, h, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   NCard, NButton, NDataTable, NModal, NForm, NFormItem, NSelect,
-  NInput, NDynamicTags, NTag, NSpace, NPopconfirm, useMessage, useDialog,
+  NInput, NDynamicTags, NTag, NSpace, NPopconfirm, NDatePicker, useMessage, useDialog,
 } from 'naive-ui'
 import { testCaseApi, type TestCase } from '@/api/testCases'
 import { applicationApi } from '@/api/applications'
 import { fmtTime } from '@/utils/time'
+import { createDateShortcuts, type DateRangeValue } from '@/utils/dateRange'
 
 const router = useRouter()
 const message = useMessage()
@@ -123,12 +137,20 @@ const editingId = ref('')
 const editForm = ref({ app_id: '', name: '', description: '', tags: [] as string[] })
 const filterAppId = ref<string | null>(null)
 const filterName = ref('')
+const filterCreatedRange = ref<DateRangeValue>(null)
 const selectedIds = ref<string[]>([])
 const batchDeleting = ref(false)
+const sortOrder = ref<'ascend' | 'descend'>('descend')
+const dateShortcuts = createDateShortcuts()
 
 const filteredCases = computed(() => {
   const kw = filterName.value.trim().toLowerCase()
-  return kw ? cases.value.filter(c => c.name.toLowerCase().includes(kw)) : cases.value
+  let list = kw ? cases.value.filter(c => c.name.toLowerCase().includes(kw)) : cases.value
+  list = [...list].sort((a, b) => {
+    const diff = new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+    return sortOrder.value === 'ascend' ? diff : -diff
+  })
+  return list
 })
 
 const pagination = reactive({
@@ -154,7 +176,7 @@ function openCreate() {
   showCreate.value = true
 }
 
-const columns = [
+const columns = computed(() => [
   { type: 'selection' as const, width: 40 },
   { title: '用例名称', key: 'name' },
   {
@@ -170,7 +192,14 @@ const columns = [
       h(NSpace, {}, () => (r.tags || []).map(t => h(NTag, { size: 'small' }, () => t))),
   },
   { title: '录制数', key: 'recording_count', width: 80 },
-  { title: '创建时间', key: 'created_at', width: 160, render: (r: TestCase) => fmtTime(r.created_at) },
+  {
+    title: '创建时间',
+    key: 'created_at',
+    width: 160,
+    sorter: true,
+    sortOrder: sortOrder.value,
+    render: (r: TestCase) => fmtTime(r.created_at),
+  },
   {
     title: '操作',
     key: 'actions',
@@ -190,17 +219,16 @@ const columns = [
         }),
       ]),
   },
-]
+])
 
 async function load() {
   loading.value = true
   try {
-    const res = await testCaseApi.list({
+    cases.value = await testCaseApi.listAll({
       app_id: filterAppId.value || undefined,
-      limit: 200,
+      created_after: filterCreatedRange.value ? new Date(filterCreatedRange.value[0]).toISOString() : undefined,
+      created_before: filterCreatedRange.value ? new Date(filterCreatedRange.value[1]).toISOString() : undefined,
     })
-    cases.value = res.data.items
-    pagination.itemCount = res.data.total
   } finally {
     loading.value = false
   }
@@ -209,6 +237,27 @@ async function load() {
 function onFilter() {
   pagination.page = 1
   load()
+}
+
+watch(filteredCases, (list) => {
+  pagination.itemCount = list.length
+  const maxPage = Math.max(1, Math.ceil(list.length / pagination.pageSize))
+  if (pagination.page > maxPage) {
+    pagination.page = maxPage
+  }
+}, { immediate: true })
+
+function clearFilters() {
+  filterAppId.value = null
+  filterName.value = ''
+  filterCreatedRange.value = null
+  onFilter()
+}
+
+function onSorterChange(sorter: { columnKey: string; order: 'ascend' | 'descend' | false } | null) {
+  if (sorter?.columnKey === 'created_at') {
+    sortOrder.value = sorter.order || 'descend'
+  }
 }
 
 async function handleCreate() {

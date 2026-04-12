@@ -20,6 +20,10 @@ const router = createRouter({
       component: () => import('@/views/recording/RecordingCenter.vue'),
     },
     {
+      path: '/recording/sessions/:id',
+      component: () => import('@/views/recording/SessionDetail.vue'),
+    },
+    {
       path: '/recordings/:id',
       component: () => import('@/views/recording/RecordingDetail.vue'),
     },
@@ -50,6 +54,14 @@ const router = createRouter({
     {
       path: '/dashboard',
       component: () => import('@/views/dashboard/Dashboard.vue'),
+    },
+    {
+      path: '/ci',
+      component: () => import('@/views/dashboard/CIHub.vue'),
+    },
+    {
+      path: '/settings',
+      component: () => import('@/views/dashboard/SettingsCenter.vue'),
     },
     {
       path: '/schedules',

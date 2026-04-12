@@ -53,6 +53,7 @@ async def init_db():
             ("replay_result", "assertion_results", "TEXT"),
             ("application", "sample_rate", "REAL DEFAULT 1.0"),
             ("application", "desensitize_rules", "TEXT"),
+            ("application", "operation_id_tags", "TEXT"),
             # Phase 3: application defaults
             ("application", "default_ignore_fields", "TEXT"),
             ("application", "default_diff_rules", "TEXT"),
@@ -87,4 +88,3 @@ async def init_db():
                 await conn.execute(_sa.text(sql))
             except Exception as e:
                 logger.debug(f"Column {table}.{col} may already exist: {e}")
-

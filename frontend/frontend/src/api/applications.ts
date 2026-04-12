@@ -23,6 +23,7 @@ export interface ApplicationCreate {
   repeater_data_dir?: string
   sample_rate?: number
   desensitize_rules?: DesensitizeRule[] | null
+  operation_id_tags?: string[] | null
   xml_request_template?: string | null
   default_ignore_fields?: string[] | null
   default_diff_rules?: object[] | null
@@ -37,6 +38,7 @@ export interface Application extends ApplicationCreate {
   last_heartbeat: string | null
   sample_rate: number
   desensitize_rules: DesensitizeRule[] | null
+  operation_id_tags: string[] | null
   default_ignore_fields: string[] | null
   default_diff_rules: object[] | null
   default_assertions: object[] | null

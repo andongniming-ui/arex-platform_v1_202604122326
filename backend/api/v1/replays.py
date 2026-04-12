@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, delete
+from sqlalchemy import select, func, delete, or_
 from database import get_db
 from models.replay import ReplayJob, ReplayResult
 from models.test_case import TestCase, TestCaseRecording
@@ -153,20 +153,40 @@ async def create_replay_job(
 
 @router.get("", response_model=dict)
 async def list_replay_jobs(
+    keyword: str | None = None,
     case_id: str | None = None,
     app_id: str | None = None,
     status: str | None = None,
+    created_after: datetime | None = None,
+    created_before: datetime | None = None,
     limit: int = 20,
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
 ):
-    base = select(ReplayJob)
+    base = (
+        select(ReplayJob)
+        .join(TestCase, TestCase.id == ReplayJob.case_id, isouter=True)
+        .join(Application, Application.id == ReplayJob.target_app_id, isouter=True)
+    )
+    if keyword:
+        like = f"%{keyword}%"
+        base = base.where(
+            or_(
+                ReplayJob.environment.ilike(like),
+                TestCase.name.ilike(like),
+                Application.name.ilike(like),
+            )
+        )
     if case_id:
         base = base.where(ReplayJob.case_id == case_id)
     if app_id:
         base = base.where(ReplayJob.target_app_id == app_id)
     if status:
         base = base.where(ReplayJob.status == status)
+    if created_after:
+        base = base.where(ReplayJob.created_at >= created_after)
+    if created_before:
+        base = base.where(ReplayJob.created_at <= created_before)
     total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
     items = (await db.execute(base.order_by(ReplayJob.created_at.desc()).offset(offset).limit(limit))).scalars().all()
     return {"items": [ReplayJobOut.model_validate(i) for i in items], "total": total}
@@ -296,25 +316,46 @@ async def get_failure_analysis(job_id: str, db: AsyncSession = Depends(get_db)):
 async def list_results(
     job_id: str,
     status: str | None = None,
+    replayed_after: str | None = None,
+    replayed_before: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    sort_by: str = "replayed_at",
+    sort_order: str = "desc",
     db: AsyncSession = Depends(get_db),
 ):
     base = select(ReplayResult).where(ReplayResult.job_id == job_id)
     if status:
         base = base.where(ReplayResult.status == status.upper())
+    if replayed_after:
+        from datetime import datetime as _dt
+        base = base.where(ReplayResult.replayed_at >= _dt.fromisoformat(replayed_after.replace("Z", "+00:00")))
+    if replayed_before:
+        from datetime import datetime as _dt
+        base = base.where(ReplayResult.replayed_at <= _dt.fromisoformat(replayed_before.replace("Z", "+00:00")))
+    _RESULT_SORT_COLS = {"replayed_at", "duration_ms", "status"}
+    if sort_by not in _RESULT_SORT_COLS:
+        raise HTTPException(400, f"Invalid sort_by '{sort_by}'. Allowed: {_RESULT_SORT_COLS}")
+    _sort_col = getattr(ReplayResult, sort_by)
+    _order_expr = _sort_col.desc() if sort_order == "desc" else _sort_col.asc()
     total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
     q = (
         select(ReplayResult, Recording.path, Recording.entry_type,
                Recording.request_body, Recording.response_body)
         .join(Recording, Recording.id == ReplayResult.recording_id, isouter=True)
         .where(ReplayResult.job_id == job_id)
-        .order_by(ReplayResult.replayed_at)
+        .order_by(_order_expr)
         .offset(offset)
         .limit(limit)
     )
     if status:
         q = q.where(ReplayResult.status == status.upper())
+    if replayed_after:
+        from datetime import datetime as _dt
+        q = q.where(ReplayResult.replayed_at >= _dt.fromisoformat(replayed_after.replace("Z", "+00:00")))
+    if replayed_before:
+        from datetime import datetime as _dt
+        q = q.where(ReplayResult.replayed_at <= _dt.fromisoformat(replayed_before.replace("Z", "+00:00")))
     rows = (await db.execute(q)).all()
     out = []
     for rr, path, entry_type, req_body, resp_body in rows:

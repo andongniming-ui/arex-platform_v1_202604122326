@@ -50,13 +50,22 @@ export interface CompareResult {
 }
 
 export const compareApi = {
-  list: (params?: { case_id?: string; limit?: number; offset?: number }) =>
+  list: (params?: {
+    keyword?: string
+    case_id?: string
+    app_id?: string
+    status?: string
+    created_after?: string
+    created_before?: string
+    limit?: number
+    offset?: number
+  }) =>
     client.get<PagedResult<CompareRun>>('/compare', { params }),
   get: (id: string) => client.get<CompareRun>(`/compare/${id}`),
   create: (data: CompareRequest) => client.post<CompareRun>('/compare', data),
   delete: (id: string) => client.delete(`/compare/${id}`),
   batchDelete: (ids: string[]) => client.delete('/compare/batch', { data: { ids } }),
-  results: (id: string, params?: { limit?: number; offset?: number }) =>
+  results: (id: string, params?: { path_contains?: string; agreement?: string; limit?: number; offset?: number }) =>
     client.get<PagedResult<CompareResult>>(`/compare/${id}/results`, { params }),
   reportUrl: (id: string) => `${client.defaults.baseURL}/compare/${id}/report`,
 }

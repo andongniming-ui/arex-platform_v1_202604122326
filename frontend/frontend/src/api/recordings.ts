@@ -47,6 +47,34 @@ export const sessionApi = {
     sort_by?: string
     sort_order?: string
   }) => client.get<PagedResult<Session>>('/sessions', { params }),
+  listAll: async (params?: {
+    app_id?: string
+    name?: string
+    status?: string
+    started_after?: string
+    started_before?: string
+    sort_by?: string
+    sort_order?: string
+  }) => {
+    const pageSize = 200
+    let offset = 0
+    let total = Infinity
+    const items: Session[] = []
+    while (offset < total) {
+      const res = await client.get<PagedResult<Session>>('/sessions', {
+        params: {
+          ...params,
+          limit: pageSize,
+          offset,
+        },
+      })
+      items.push(...res.data.items)
+      total = res.data.total
+      offset += pageSize
+      if (res.data.items.length === 0) break
+    }
+    return items
+  },
   get: (id: string) => client.get<Session>(`/sessions/${id}`),
   create: (data: { app_id: string; name?: string; description?: string; created_by?: string }) =>
     client.post<Session>('/sessions', data),
@@ -78,6 +106,36 @@ export const recordingApi = {
     sort_by?: string
     sort_order?: string
   }) => client.get<PagedResult<Recording>>('/recordings', { params }),
+  listAll: async (params?: {
+    session_id?: string
+    app_id?: string
+    entry_type?: string
+    status?: string
+    path_contains?: string
+    created_after?: string
+    created_before?: string
+    sort_by?: string
+    sort_order?: string
+  }) => {
+    const pageSize = 200
+    let offset = 0
+    let total = Infinity
+    const items: Recording[] = []
+    while (offset < total) {
+      const res = await client.get<PagedResult<Recording>>('/recordings', {
+        params: {
+          ...params,
+          limit: pageSize,
+          offset,
+        },
+      })
+      items.push(...res.data.items)
+      total = res.data.total
+      offset += pageSize
+      if (res.data.items.length === 0) break
+    }
+    return items
+  },
   get: (id: string) => client.get<Recording>(`/recordings/${id}`),
   delete: (id: string) => client.delete(`/recordings/${id}`),
   batchDelete: (ids: string[]) => client.delete('/recordings/batch', { data: { ids } }),
