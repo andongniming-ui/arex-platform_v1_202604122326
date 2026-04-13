@@ -15,6 +15,10 @@ from integration import ssh_executor
 from integration.config_manager import build_arex_conf, get_default_conf_preview, parse_arex_storage_url
 from integration.arex_client import ArexClient, ArexClientError
 from config import settings
+from services.session_service import (
+    build_recording_uri,
+    collect_recordings as _collect_recordings,
+)
 from utils.desensitize import desensitize_body
 from utils.operation_name import extract_operation_name, get_operation_id_tags
 from utils.proxy_recording import has_proxy_recording_header, with_proxy_recording_header
@@ -238,212 +242,6 @@ async def stop_session(
 
     background_tasks.add_task(_collect_recordings, session_id)
     return {"session_id": session_id, "status": "COLLECTING"}
-
-
-async def _collect_recordings(session_id: str):
-    """Background task: query arex-storage API and store recordings in DB.
-
-    The arex-agent 0.4.8 sends recordings in periodic batch windows (≈5–30 s).
-    To avoid the race condition where the batch hasn't flushed when this task
-    runs, we wait a short grace period first.  Real-time capture in arex_proxy
-    already handles most cases; this function adds any recordings that arrived
-    in arex-storage after the session stopped (e.g. late-flushing batches).
-    """
-    from database import async_session_factory
-    from datetime import timezone as _tz
-
-    # Grace period: give the arex-agent time to flush its batch window to arex-storage.
-    await asyncio.sleep(35)
-
-    async with async_session_factory() as db:
-        s = await db.get(RecordingSession, session_id)
-        if not s:
-            return
-        app = await db.get(Application, s.app_id)
-        if not app:
-            return
-
-        operation_tags = get_operation_id_tags(app)
-
-        # Count recordings already captured in real-time by arex_proxy
-        from sqlalchemy import func as _func
-        already_count_result = await db.execute(
-            select(_func.count()).select_from(Recording).where(
-                Recording.session_id == session_id
-            )
-        )
-        already_count = already_count_result.scalar() or 0
-
-        # Build set of trace_ids already in DB to avoid duplicates
-        existing_trace_result = await db.execute(
-            select(Recording.trace_id).where(
-                Recording.session_id == session_id,
-                Recording.trace_id.isnot(None),
-            )
-        )
-        existing_trace_ids = {row[0] for row in existing_trace_result.fetchall()}
-
-        count = already_count
-        try:
-            arex_client = ArexClient(settings.arex_storage_url)
-            begin_time = s.started_at
-            end_time = s.stopped_at or datetime.utcnow()
-
-            # Query recordings from arex-storage
-            resp = await asyncio.wait_for(
-                arex_client.query_recordings(
-                    app_id=app.name,
-                    begin_time=begin_time,
-                    end_time=end_time,
-                    page_size=200,
-                ),
-                timeout=60.0,
-            )
-
-            # Parse AREXMocker JSON list into Recording objects
-            # arex-storage 0.6.x response shape: {"records": [...], "desensitized": false}
-            # (not wrapped in "body" — records are at top level)
-            sources = []
-            # Try top-level "records" field first (arex-storage 0.6.x)
-            if "records" in resp:
-                sources = resp.get("records") or []
-            else:
-                body_val = resp.get("body", {})
-                if isinstance(body_val, dict):
-                    sources = body_val.get("sources", []) or body_val.get("recordList", []) or []
-                elif isinstance(body_val, list):
-                    sources = body_val
-
-            desensitize_rules = getattr(app, "desensitize_rules", None) or []
-
-            # arex-storage 0.6.x replayCase list query does NOT return targetResponse.
-            # Must call viewRecord for each recording to get the full data.
-            full_mockers = []
-            for summary in sources:
-                record_id = summary.get("id") or summary.get("recordId")
-                if record_id:
-                    try:
-                        full = await asyncio.wait_for(
-                            arex_client.view_recording(record_id),
-                            timeout=15.0,
-                        )
-                        full_mockers.append(full if full else summary)
-                    except Exception:
-                        full_mockers.append(summary)
-                else:
-                    full_mockers.append(summary)
-
-            for mocker in full_mockers:
-                # Map AREXMocker fields to Recording model
-                category = mocker.get("categoryType", {})
-                if isinstance(category, dict):
-                    entry_type = category.get("name", "HTTP").upper()
-                else:
-                    entry_type = str(category).upper() if category else "HTTP"
-
-                # Map AREX category names to our internal types
-                category_map = {
-                    "HTTPSERVLETMOCKER": "HTTP",
-                    "HTTPCLIENT": "HTTP",
-                    "DUBBO_PROVIDER": "DUBBO",
-                    "MYBATIS": "MYBATIS",
-                }
-                entry_type = category_map.get(entry_type, entry_type)
-
-                target_req = mocker.get("targetRequest") or {}
-                target_resp = mocker.get("targetResponse") or {}
-
-                # Extract body from arex-storage 0.6.x wrapper: {"body": ..., "attributes": ..., "type": ...}
-                # targetRequest.body is base64-encoded; attributes contains HttpMethod/RequestPath/Headers
-                # targetResponse.body is a raw string (XML, JSON, plain text, etc.)
-                import base64 as _b64
-                import json as _json
-                if isinstance(target_req, dict):
-                    attrs = target_req.get("attributes") or {}
-                    req_body_raw = target_req.get("body") or ""
-                    if isinstance(req_body_raw, str) and req_body_raw:
-                        try:
-                            req_body_raw = _b64.b64decode(req_body_raw).decode("utf-8", errors="replace")
-                        except Exception:
-                            pass  # keep as-is if not valid base64
-                    http_method = (attrs.get("HttpMethod") or "POST").upper()
-                    req_path = attrs.get("RequestPath") or "/"
-                    hdrs = attrs.get("Headers") or {}
-                    if has_proxy_recording_header(hdrs):
-                        continue
-                    content_type = hdrs.get("content-type") or hdrs.get("Content-Type")
-                    request_body = _json.dumps({
-                        "method": http_method,
-                        "uri": req_path,
-                        "body": req_body_raw,
-                        "contentType": content_type,
-                    }, ensure_ascii=False)
-                else:
-                    request_body = str(target_req)
-
-                if isinstance(target_resp, dict):
-                    resp_body_raw = target_resp.get("body") or ""
-                    response_body = str(resp_body_raw)
-                else:
-                    response_body = str(target_resp) if target_resp else ""
-
-                operation_label = (
-                    extract_operation_name(req_body_raw if isinstance(target_req, dict) else request_body, operation_tags)
-                    or extract_operation_name(response_body, operation_tags)
-                    or mocker.get("operationName")
-                    or req_path
-                    or "/"
-                )
-
-                # Apply desensitization
-                if desensitize_rules:
-                    request_body = desensitize_body(request_body, desensitize_rules)
-                    response_body = desensitize_body(response_body, desensitize_rules)
-
-                # Parse timestamp — arex-storage 0.6.x uses "creationTime", older uses "createTime"
-                create_time_ms = mocker.get("creationTime") or mocker.get("createTime") or 0
-                if create_time_ms:
-                    ts = datetime.utcfromtimestamp(create_time_ms / 1000)
-                else:
-                    ts = datetime.utcnow()
-
-                # arex-storage 0.6.x uses "id" field as record identifier
-                rec_trace_id = mocker.get("id") or mocker.get("recordId") or str(uuid.uuid4())
-
-                # Skip recordings already captured in real-time by arex_proxy
-                if rec_trace_id in existing_trace_ids:
-                    continue
-
-                rec = Recording(
-                    id=str(uuid.uuid4()),
-                    session_id=session_id,
-                    app_id=s.app_id,
-                    trace_id=rec_trace_id,
-                    entry_type=entry_type,
-                    entry_app=app.name,
-                    host=app.ssh_host,
-                    path=operation_label,
-                    request_body=request_body,
-                    response_body=response_body,
-                    timestamp=ts,
-                    status="RAW",
-                )
-                db.add(rec)
-                count += 1
-                existing_trace_ids.add(rec_trace_id)
-
-            s.record_count = count
-            s.status = "DONE"
-        except Exception as e:
-            import traceback
-            print(f"[ERROR] collect_recordings failed: {e}")
-            traceback.print_exc()
-            s.record_count = count
-            s.status = "ERROR"
-            s.error_message = str(e)
-        await db.commit()
-
-
 # ── Direct-record proxy ───────────────────────────────────────────────────────
 
 @router.post("/sessions/{session_id}/direct-record", response_model=dict)
@@ -657,7 +455,7 @@ async def transparent_proxy(
 
     operation = extract_operation_name(body_str, get_operation_id_tags(app)) or ""
 
-    req_path = f"/{path}"
+    req_path = build_recording_uri(path, query)
     operation_label = operation or req_path
     content_type = fwd_headers.get("content-type") or fwd_headers.get("Content-Type") or ""
 

@@ -198,7 +198,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, h, onMounted, reactive, ref } from 'vue'
+import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   NAlert,
@@ -223,6 +223,7 @@ import {
 } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { applicationApi } from '@/api/applications'
+import { usePageSummary } from '@/composables/usePageSummary'
 import { recordingApi, sessionApi, type Recording, type Session } from '@/api/recordings'
 import { createDateShortcuts, type DateRangeValue } from '@/utils/dateRange'
 import { fmtTime } from '@/utils/time'
@@ -230,6 +231,7 @@ import { fmtTime } from '@/utils/time'
 const route = useRoute()
 const router = useRouter()
 const message = useMessage()
+const { setPageSummary, clearPageSummary } = usePageSummary()
 const sessionId = String(route.params.id)
 
 const session = ref<Session | null>(null)
@@ -499,4 +501,10 @@ async function loadPage() {
 }
 
 onMounted(loadPage)
+
+watch(recordingTotal, (count) => {
+  setPageSummary(`共 ${count} 条会话录制`)
+}, { immediate: true })
+
+onBeforeUnmount(clearPageSummary)
 </script>

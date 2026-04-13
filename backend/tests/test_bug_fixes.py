@@ -1,8 +1,11 @@
 """
 针对本次审查发现并修复的 bug 的回归测试，以及之前未覆盖的边界场景。
 """
+import asyncio
 import json
 import pytest
+import httpx
+from unittest.mock import patch
 
 
 # ── 辅助函数 ──────────────────────────────────────────────────────────────────
@@ -20,6 +23,65 @@ def _create_app(client, name="test-app"):
     })
     assert r.status_code == 201, r.text
     return r.json()
+
+
+def _create_session(client, app_id, name="test-session"):
+    r = client.post("/api/v1/sessions", json={
+        "app_id": app_id,
+        "name": name,
+    })
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def _create_test_case(client, app_id, name="test-case"):
+    r = client.post("/api/v1/test-cases", json={
+        "app_id": app_id,
+        "name": name,
+    })
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def _add_recording_to_case(client, case_id, recording_id):
+    r = client.post(
+        f"/api/v1/test-cases/{case_id}/recordings",
+        json={"recording_ids": [recording_id]},
+    )
+    assert r.status_code in (200, 201), r.text
+    return r.json()
+
+
+def _import_har_recording(client, app_id, path="/api/test"):
+    har = {
+        "log": {
+            "version": "1.2",
+            "entries": [{
+                "request": {
+                    "method": "GET",
+                    "url": f"http://localhost:8080{path}",
+                    "headers": [],
+                    "queryString": [],
+                    "postData": None,
+                },
+                "response": {
+                    "status": 200,
+                    "content": {"text": '{"code":0}', "mimeType": "application/json"},
+                },
+                "timings": {"send": 0, "wait": 10, "receive": 0},
+            }],
+        },
+    }
+    r = client.post(
+        "/api/v1/recordings/import-har",
+        data={"app_id": app_id},
+        files={"file": ("test.har", json.dumps(har).encode(), "application/json")},
+    )
+    assert r.status_code in (200, 201), r.text
+    session_id = r.json()["session_id"]
+    recordings = client.get(f"/api/v1/recordings?session_id={session_id}")
+    assert recordings.status_code == 200, recordings.text
+    return recordings.json()["items"][0]
 
 
 VALID_CONFIG_JSON = json.dumps({
@@ -238,6 +300,107 @@ class TestApplicationEdgeCases:
         r = client.get("/api/v1/applications")
         assert r.status_code == 200
         assert r.json() == []
+
+
+class TestValidationGuards:
+    def test_replay_concurrency_zero_returns_422(self, client):
+        r = client.post("/api/v1/replays", json={
+            "case_id": "case-1",
+            "target_app_id": "app-1",
+            "concurrency": 0,
+        })
+        assert r.status_code == 422
+
+    def test_schedule_concurrency_zero_returns_422(self, client):
+        r = client.post("/api/v1/schedules", json={
+            "name": "bad-schedule",
+            "cron_expr": "* * * * *",
+            "case_id": "case-1",
+            "target_app_id": "app-1",
+            "concurrency": 0,
+        })
+        assert r.status_code == 422
+
+    def test_compare_concurrency_zero_returns_422(self, client):
+        r = client.post("/api/v1/compare", json={
+            "name": "bad-compare",
+            "case_id": "case-1",
+            "app_a_id": "app-a",
+            "app_b_id": "app-b",
+            "concurrency": 0,
+        })
+        assert r.status_code == 422
+
+
+class TestReplayRegressionFixes:
+    def test_repeat_count_updates_total_count(self, client):
+        app = _create_app(client, name="repeat-app")
+        recording = _import_har_recording(client, app["id"], path="/api/repeat")
+        case = _create_test_case(client, app["id"], name="repeat-case")
+        _add_recording_to_case(client, case["id"], recording["id"])
+
+        with patch("api.v1.replays._fire", lambda coro: coro.close()):
+            r = client.post("/api/v1/replays", json={
+                "case_id": case["id"],
+                "target_app_id": app["id"],
+                "repeat_count": 3,
+            })
+
+        assert r.status_code == 201, r.text
+        assert r.json()["total_count"] == 3
+
+    def test_transparent_proxy_preserves_query_string_in_recording_uri(self, client):
+        app = _create_app(client, name="proxy-app")
+        session = _create_session(client, app["id"], name="proxy-session")
+        assert session["status"] == "ACTIVE"
+
+        async def fake_request(self, method, url, headers=None, content=None):
+            return httpx.Response(
+                status_code=200,
+                text='{"ok":true}',
+                headers={"content-type": "application/json"},
+                request=httpx.Request(method, url),
+            )
+
+        with patch("httpx.AsyncClient.request", new=fake_request):
+            r = client.post(
+                f"/api/v1/proxy/{app['name']}/bank/service?service_id=OPEN_ACCOUNT&channel=mobile",
+                content="<service_id>OPEN_ACCOUNT</service_id>",
+                headers={"content-type": "application/xml"},
+            )
+
+        assert r.status_code == 200, r.text
+
+        recordings = client.get(f"/api/v1/recordings?session_id={session['id']}")
+        assert recordings.status_code == 200, recordings.text
+        items = recordings.json()["items"]
+        assert len(items) == 1
+        request_body = json.loads(items[0]["request_body"])
+        assert request_body["uri"] == "/bank/service?service_id=OPEN_ACCOUNT&channel=mobile"
+
+    def test_ci_timeout_marks_job_cancelled(self, client):
+        app = _create_app(client, name="ci-app")
+        recording = _import_har_recording(client, app["id"], path="/api/ci")
+        case = _create_test_case(client, app["id"], name="ci-case")
+        _add_recording_to_case(client, case["id"], recording["id"])
+
+        async def slow_run(_: str):
+            await asyncio.Event().wait()
+
+        with patch("api.v1.ci._run_replay_job", new=slow_run):
+            r = client.post("/api/v1/ci/replay", json={
+                "case_id": case["id"],
+                "target_app_id": app["id"],
+                "timeout_seconds": 10,
+            })
+
+        assert r.status_code == 504, r.text
+        detail = r.json()["detail"]
+        job_id = detail["job_id"]
+
+        job = client.get(f"/api/v1/replays/{job_id}")
+        assert job.status_code == 200, job.text
+        assert job.json()["status"] == "CANCELLED"
 
 
 # ── 6. 测试用例边界 ───────────────────────────────────────────────────────────

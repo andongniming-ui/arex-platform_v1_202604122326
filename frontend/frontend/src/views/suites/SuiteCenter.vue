@@ -135,7 +135,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, h, onMounted } from 'vue'
+import { ref, reactive, computed, h, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   NCard, NSpace, NButton, NDataTable, NModal, NForm, NFormItem,
@@ -146,11 +146,13 @@ import {
 import { suiteApi, type Suite, type SuiteRun } from '@/api/suites'
 import { applicationApi } from '@/api/applications'
 import { testCaseApi } from '@/api/testCases'
+import { usePageSummary } from '@/composables/usePageSummary'
 import { fmtTime } from '@/utils/time'
 import { createDateShortcuts, inDateRange, type DateRangeValue } from '@/utils/dateRange'
 
 const router = useRouter()
 const message = useMessage()
+const { setPageSummary, clearPageSummary } = usePageSummary()
 
 const suites = ref<Suite[]>([])
 const loading = ref(false)
@@ -431,4 +433,10 @@ onMounted(async () => {
   caseMap.value = Object.fromEntries(casesRes.map(c => [c.id, c.name]))
   await loadSuites()
 })
+
+watch(() => filteredSuites.value.length, (count) => {
+  setPageSummary(`共 ${count} 条套件`)
+}, { immediate: true })
+
+onBeforeUnmount(clearPageSummary)
 </script>

@@ -36,6 +36,7 @@ async def init_db():
     import models.schedule     # noqa: F401
     import models.suite        # noqa: F401
     import models.compare      # noqa: F401
+    import models.test_case    # noqa: F401
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         # Add new columns to existing tables without a full migration framework.

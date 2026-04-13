@@ -72,12 +72,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, h } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, h, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   NCard, NSpace, NDataTable, NTag, NButton, NInput, NSelect, NPopconfirm, NDatePicker, useMessage, useDialog,
 } from 'naive-ui'
 import { replayApi, type ReplayJob, type ReplayJobCreate } from '@/api/replays'
+import { usePageSummary } from '@/composables/usePageSummary'
 import { fmtTime } from '@/utils/time'
 import { testCaseApi } from '@/api/testCases'
 import { applicationApi } from '@/api/applications'
@@ -86,6 +87,7 @@ import { createDateShortcuts, type DateRangeValue } from '@/utils/dateRange'
 const router = useRouter()
 const message = useMessage()
 const dialog = useDialog()
+const { setPageSummary, clearPageSummary } = usePageSummary()
 
 const caseOptions = ref<{ label: string; value: string }[]>([])
 const appOptions = ref<{ label: string; value: string }[]>([])
@@ -339,4 +341,10 @@ onMounted(async () => {
     loadJobs(),
   ])
 })
+
+watch(jobTotal, (count) => {
+  setPageSummary(`共 ${count} 条回放记录`)
+}, { immediate: true })
+
+onBeforeUnmount(clearPageSummary)
 </script>

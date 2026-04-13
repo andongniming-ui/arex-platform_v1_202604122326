@@ -267,7 +267,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, watch, onMounted, onActivated, h, nextTick } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onActivated, onBeforeUnmount, h, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   NCard, NSpace, NSelect, NButton, NDataTable, NTag, NModal, NInput,
@@ -277,12 +277,14 @@ import { recordingApi, sessionApi, type Recording, type Session } from '@/api/re
 import { fmtTime } from '@/utils/time'
 import { applicationApi } from '@/api/applications'
 import { testCaseApi } from '@/api/testCases'
+import { usePageSummary } from '@/composables/usePageSummary'
 import { getQueryDateRange, getQueryText, setQueryDateRange, setQueryText } from '@/utils/filterQuery'
 
 const route = useRoute()
 const router = useRouter()
 const message = useMessage()
 const dialog = useDialog()
+const { setPageSummary, clearPageSummary } = usePageSummary()
 
 const recordings = ref<Recording[]>([])
 const loading = ref(false)
@@ -962,6 +964,12 @@ async function init() {
 
 onMounted(init)
 onActivated(init)
+
+watch(() => sessionPagination.itemCount, (count) => {
+  setPageSummary(`共 ${count} 个录制会话`)
+}, { immediate: true })
+
+onBeforeUnmount(clearPageSummary)
 
 watch([
   filterAppId,

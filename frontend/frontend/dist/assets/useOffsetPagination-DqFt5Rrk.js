@@ -1,0 +1,1 @@
+import{aF as o,m as u}from"./index-By7nBA3K.js";function f(a={}){const e=o({page:a.page??1,pageSize:a.pageSize??20,pageSizes:a.pageSizes??[20,50,100],itemCount:0}),i=u(()=>(e.page-1)*e.pageSize);function g(){e.page=1}function n(t){e.pageSize=t,e.page=1}function p(t){e.itemCount=t}return{pagination:e,offset:i,resetPage:g,updatePageSize:n,setTotal:p}}export{f as u};

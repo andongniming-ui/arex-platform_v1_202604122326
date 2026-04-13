@@ -160,63 +160,12 @@
 
   <!-- Edit Modal -->
   <n-modal v-model:show="showEdit" preset="dialog" title="编辑应用" style="width: 760px">
-    <n-form :model="editForm" label-placement="left" label-width="120px">
-      <n-form-item label="应用说明">
-        <n-input v-model:value="editForm.description" placeholder="例如：PL2 录制源 / VT 缺陷环境" />
-      </n-form-item>
-      <n-form-item label="SSH Host" required>
-        <n-input v-model:value="editForm.ssh_host" placeholder="192.168.1.100" />
-      </n-form-item>
-      <n-form-item label="SSH User" required>
-        <n-input v-model:value="editForm.ssh_user" placeholder="root" />
-      </n-form-item>
-      <n-form-item label="认证方式">
-        <n-select v-model:value="editForm.ssh_auth_type" :options="authOptions" />
-      </n-form-item>
-      <n-form-item v-if="editForm.ssh_auth_type === 'KEY'" label="私钥路径">
-        <n-input v-model:value="editForm.ssh_key_path" placeholder="/root/.ssh/id_rsa" />
-      </n-form-item>
-      <n-form-item v-else label="SSH 密码">
-        <n-input v-model:value="editForm.ssh_password" type="password" />
-      </n-form-item>
-      <n-form-item label="JAR 名称">
-        <n-input v-model:value="editForm.java_jar_name" placeholder="my-service.jar" />
-      </n-form-item>
-      <n-form-item label="应用端口">
-        <n-input-number v-model:value="editForm.repeater_port" :min="1" :max="65535" />
-      </n-form-item>
-      <n-form-item label="高级配置">
-        <n-button tertiary size="small" @click="showAdvancedEditFields = !showAdvancedEditFields">
-          {{ showAdvancedEditFields ? '收起高级配置' : '展开高级配置' }}
-        </n-button>
-      </n-form-item>
-      <template v-if="showAdvancedEditFields">
-        <n-form-item label="SSH 端口">
-          <n-input-number v-model:value="editForm.ssh_port" :min="1" :max="65535" />
-        </n-form-item>
-        <n-form-item label="Sandbox 端口">
-          <n-input-number v-model:value="editForm.sandbox_port" :min="1" :max="65535" />
-        </n-form-item>
-        <n-form-item label="Sandbox 路径">
-          <n-input v-model:value="editForm.sandbox_home" placeholder="/root/.sandbox" />
-        </n-form-item>
-        <n-form-item label="录制数据目录">
-          <n-input v-model:value="editForm.repeater_data_dir" placeholder="/root/.sandbox-module/repeater-data/record" />
-        </n-form-item>
-        <n-form-item label="采样率">
-          <n-space align="center">
-            <n-input-number v-model:value="editForm.sample_rate_percent" :min="1" :max="100" />
-            <span>%</span>
-          </n-space>
-        </n-form-item>
-        <n-form-item label="接口识别字段">
-          <n-dynamic-tags v-model:value="editForm.operation_id_tags" />
-        </n-form-item>
-        <n-form-item label="默认忽略字段">
-          <n-dynamic-tags v-model:value="editForm.default_ignore_fields" />
-        </n-form-item>
-      </template>
-    </n-form>
+    <application-editor-form
+      v-model="editForm"
+      v-model:show-advanced="showAdvancedEditFields"
+      :show-name="false"
+      :show-advanced-guide="false"
+    />
     <template #action>
       <n-button @click="showEdit = false">取消</n-button>
       <n-button type="primary" :loading="savingEdit" @click="handleSaveEdit">保存</n-button>
@@ -232,7 +181,7 @@
         :columns="sessionColumns"
         :data="sessions"
         :loading="sessionsLoading"
-        :row-key="(r: any) => r.id"
+        :row-key="(r: Session) => r.id"
         :checked-row-keys="selectedSessionIds"
         @update:checked-row-keys="selectedSessionIds = $event as string[]"
       />
@@ -251,7 +200,7 @@
           :show-quick-jumper="true"
           :disabled="sessionsLoading"
           @update:page="loadSessions"
-          @update:page-size="(size) => { sessionPagination.pageSize = size; sessionPagination.page = 1; loadSessions() }"
+          @update:page-size="handleSessionPageSizeChange"
         />
       </n-space>
     </n-card>
@@ -259,7 +208,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, onBeforeUnmount, h } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount, h, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   NCard, NSpace, NTag, NButton, NDescriptions, NDescriptionsItem,
@@ -267,13 +216,23 @@ import {
   NSlider, NDynamicTags, NAlert, NTooltip, useMessage, useDialog,
 } from 'naive-ui'
 import { applicationApi, type Application, type DesensitizeRule } from '@/api/applications'
+import ApplicationEditorForm from '@/components/applications/ApplicationEditorForm.vue'
+import { useOffsetPagination } from '@/composables/useOffsetPagination'
+import { usePageSummary } from '@/composables/usePageSummary'
 import { sessionApi, configApi, type Session } from '@/api/recordings'
 import { fmtTime } from '@/utils/time'
+import {
+  buildApplicationPayload,
+  createApplicationEditorModel,
+  createEmptyApplicationEditorModel,
+  type ApplicationEditorModel,
+} from '@/utils/applicationEditor'
 
 const route = useRoute()
 const router = useRouter()
 const message = useMessage()
 const dialog = useDialog()
+const { setPageSummary, clearPageSummary } = usePageSummary()
 
 // 收集所有活跃的轮询，组件销毁时统一清理
 const activePolls = new Set<ReturnType<typeof setInterval>>()
@@ -285,7 +244,13 @@ const configJson = ref('')
 const sessions = ref<Session[]>([])
 const sessionsLoading = ref(false)
 const sessionTotal = ref(0)
-const sessionPagination = reactive({ page: 1, pageSize: 20, itemCount: 0 })
+const {
+  pagination: sessionPagination,
+  offset: sessionOffset,
+  resetPage: resetSessionPage,
+  setTotal: setSessionTotal,
+  updatePageSize: updateSessionPageSize,
+} = useOffsetPagination({ pageSize: 20, pageSizes: [10, 20, 50] })
 const selectedSessionIds = ref<string[]>([])
 const batchDeletingSessions = ref(false)
 
@@ -385,48 +350,11 @@ async function saveRecordingControls() {
   }
 }
 
-const authOptions = [
-  { label: 'SSH Key', value: 'KEY' },
-  { label: '密码', value: 'PASSWORD' },
-]
-
-const editForm = ref({
-  description: '',
-  ssh_host: '',
-  ssh_port: 22,
-  ssh_user: '',
-  ssh_auth_type: 'KEY' as 'KEY' | 'PASSWORD',
-  ssh_key_path: '',
-  ssh_password: '',
-  java_jar_name: '',
-  sandbox_port: 39393,
-  repeater_port: 8080,
-  sandbox_home: '/root/.sandbox',
-  repeater_data_dir: '/root/.sandbox-module/repeater-data/record',
-  sample_rate_percent: 100,
-  operation_id_tags: [] as string[],
-  default_ignore_fields: [] as string[],
-})
+const editForm = ref<ApplicationEditorModel>(createEmptyApplicationEditorModel())
 
 function openEdit() {
   if (!app.value) return
-  editForm.value = {
-    description: app.value.description || '',
-    ssh_host: app.value.ssh_host,
-    ssh_port: app.value.ssh_port ?? 22,
-    ssh_user: app.value.ssh_user,
-    ssh_auth_type: (app.value.ssh_auth_type as 'KEY' | 'PASSWORD') || 'KEY',
-    ssh_key_path: app.value.ssh_key_path || '',
-    ssh_password: app.value.ssh_password || '',
-    java_jar_name: app.value.java_jar_name || '',
-    sandbox_port: app.value.sandbox_port ?? 39393,
-    repeater_port: app.value.repeater_port ?? 8080,
-    sandbox_home: app.value.sandbox_home || '/root/.sandbox',
-    repeater_data_dir: app.value.repeater_data_dir || '/root/.sandbox-module/repeater-data/record',
-    sample_rate_percent: Math.round((app.value.sample_rate ?? 1) * 100),
-    operation_id_tags: [...(app.value.operation_id_tags ?? [])],
-    default_ignore_fields: [...(app.value.default_ignore_fields ?? [])],
-  }
+  editForm.value = createApplicationEditorModel(app.value)
   showAdvancedEditFields.value = true
   showEdit.value = true
 }
@@ -434,16 +362,7 @@ function openEdit() {
 async function handleSaveEdit() {
   savingEdit.value = true
   try {
-    const payload: any = {
-      ...editForm.value,
-      sample_rate: (editForm.value.sample_rate_percent || 100) / 100,
-      operation_id_tags: editForm.value.operation_id_tags.length ? editForm.value.operation_id_tags : undefined,
-      default_ignore_fields: editForm.value.default_ignore_fields.length ? editForm.value.default_ignore_fields : undefined,
-    }
-    delete payload.sample_rate_percent
-    if (!payload.ssh_key_path) delete payload.ssh_key_path
-    if (!payload.ssh_password) delete payload.ssh_password
-    if (!payload.description) delete payload.description
+    const payload = buildApplicationPayload(editForm.value)
     const res = await applicationApi.update(appId, payload)
     app.value = res.data
     message.success('应用更新成功')
@@ -455,7 +374,7 @@ async function handleSaveEdit() {
   }
 }
 
-const statusColor: Record<string, any> = {
+const statusColor: Record<string, 'success' | 'warning' | 'error' | 'default'> = {
   ATTACHED: 'success', DETACHED: 'warning', ERROR: 'error', UNKNOWN: 'default',
 }
 
@@ -467,7 +386,7 @@ const sessionStatusLabel: Record<string, string> = {
   ACTIVE: '录制中', DONE: '已完成', COLLECTING: '采集中', STOPPED: '已停止', ERROR: '错误',
 }
 
-const sessionStatusColor: Record<string, any> = {
+const sessionStatusColor: Record<string, 'success' | 'warning' | 'error' | 'info' | 'default'> = {
   ACTIVE: 'success', DONE: 'info', COLLECTING: 'warning', STOPPED: 'default', ERROR: 'error',
 }
 
@@ -553,8 +472,11 @@ async function deleteSession(session: Session) {
   }
   try {
     await sessionApi.delete(session.id)
-    sessions.value = sessions.value.filter(s => s.id !== session.id)
     selectedSessionIds.value = selectedSessionIds.value.filter(i => i !== session.id)
+    if (sessions.value.length === 1 && sessionPagination.page > 1) {
+      sessionPagination.page -= 1
+    }
+    await loadSessions()
     message.success('会话已删除')
   } catch (e: any) {
     message.error(e.response?.data?.detail || '删除失败')
@@ -574,12 +496,16 @@ async function deleteSelectedSessions() {
     onPositiveClick: async () => {
       batchDeletingSessions.value = true
       try {
+        const deletedCount = selectedSessionIds.value.length
+        const shouldMovePrevPage =
+          sessions.value.length === deletedCount && sessionPagination.page > 1
         await sessionApi.batchDelete(selectedSessionIds.value)
-        message.success(`已删除 ${selectedSessionIds.value.length} 个会话`)
-        sessions.value = sessions.value.filter(s => !selectedSessionIds.value.includes(s.id))
+        message.success(`已删除 ${deletedCount} 个会话`)
         selectedSessionIds.value = []
-        sessionTotal.value = sessions.value.length
-        sessionPagination.itemCount = sessionTotal.value
+        if (shouldMovePrevPage) {
+          sessionPagination.page -= 1
+        }
+        await loadSessions()
       } finally {
         batchDeletingSessions.value = false
       }
@@ -635,15 +561,25 @@ async function load() {
 async function loadSessions() {
   sessionsLoading.value = true
   try {
-    const offset = (sessionPagination.page - 1) * sessionPagination.pageSize
-    const sRes = await sessionApi.list(appId, sessionPagination.pageSize, offset)
+    const sRes = await sessionApi.list(appId, sessionPagination.pageSize, sessionOffset.value)
     sessions.value = sRes.data.items
     sessionTotal.value = sRes.data.total
-    sessionPagination.itemCount = sRes.data.total
+    setSessionTotal(sRes.data.total)
   } finally {
     sessionsLoading.value = false
   }
 }
+
+function handleSessionPageSizeChange(size: number) {
+  updateSessionPageSize(size)
+  loadSessions()
+}
+
+watch(sessionTotal, (count) => {
+  setPageSummary(`共 ${count} 条录制会话`)
+}, { immediate: true })
+
+onBeforeUnmount(clearPageSummary)
 
 async function loadDefaultConfig() {
   const res = await configApi.getDefault(appId)
@@ -748,7 +684,7 @@ async function createSession() {
     name: `${app.value?.name ?? '录制'}_${new Date().toLocaleTimeString()}`,
   })
   message.success(`录制会话已创建: ${res.data.name || fmtTime(res.data.started_at)}`)
-  sessionPagination.page = 1
+  resetSessionPage()
   await loadSessions()
 }
 

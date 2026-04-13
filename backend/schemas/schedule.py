@@ -1,21 +1,21 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 
 
 class ScheduleCreate(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=256)
     case_id: str
     target_app_id: str
     cron_expr: str
     enabled: bool = True
-    concurrency: int = 1
-    delay_ms: int = 0
+    concurrency: int = Field(default=1, ge=1, le=20)
+    delay_ms: int = Field(default=0, ge=0)
     override_host: str | None = None
     environment: str | None = None
     ignore_fields: list[str] | None = None
     diff_rules: list[dict] | None = None
     assertions: list[dict] | None = None
-    perf_threshold_ms: int | None = None
+    perf_threshold_ms: int | None = Field(default=None, ge=1)
     webhook_url: str | None = None
     notify_type: str | None = None  # generic / dingtalk / wecom
 
@@ -24,14 +24,14 @@ class ScheduleUpdate(BaseModel):
     name: str | None = None
     cron_expr: str | None = None
     enabled: bool | None = None
-    concurrency: int | None = None
-    delay_ms: int | None = None
+    concurrency: int | None = Field(default=None, ge=1, le=20)
+    delay_ms: int | None = Field(default=None, ge=0)
     override_host: str | None = None
     environment: str | None = None
     ignore_fields: list[str] | None = None
     diff_rules: list[dict] | None = None
     assertions: list[dict] | None = None
-    perf_threshold_ms: int | None = None
+    perf_threshold_ms: int | None = Field(default=None, ge=1)
     webhook_url: str | None = None
     notify_type: str | None = None
 

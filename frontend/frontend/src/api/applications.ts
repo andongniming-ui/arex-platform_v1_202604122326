@@ -1,5 +1,7 @@
 import client from './client'
 
+export type ApplicationAuthType = 'KEY' | 'PASSWORD'
+
 export interface DesensitizeRule {
   field: string
   action: 'remove' | 'mask' | 'partial' | 'hash'
@@ -13,7 +15,7 @@ export interface ApplicationCreate {
   ssh_host: string
   ssh_port?: number
   ssh_user: string
-  ssh_auth_type?: 'KEY' | 'PASSWORD'
+  ssh_auth_type?: ApplicationAuthType
   ssh_key_path?: string
   ssh_password?: string
   sandbox_port?: number
@@ -31,14 +33,26 @@ export interface ApplicationCreate {
   default_perf_threshold_ms?: number | null
 }
 
-export interface Application extends ApplicationCreate {
+export interface Application {
   id: string
+  name: string
+  description?: string
+  ssh_host: string
+  ssh_port?: number
+  ssh_user: string
+  ssh_auth_type: ApplicationAuthType
+  sandbox_port?: number
+  repeater_port?: number
+  java_jar_name?: string
+  sandbox_home?: string
+  repeater_data_dir?: string
   agent_status: string
   java_pid: number | null
   last_heartbeat: string | null
   sample_rate: number
   desensitize_rules: DesensitizeRule[] | null
   operation_id_tags: string[] | null
+  xml_request_template?: string | null
   default_ignore_fields: string[] | null
   default_diff_rules: object[] | null
   default_assertions: object[] | null
@@ -47,11 +61,13 @@ export interface Application extends ApplicationCreate {
   updated_at: string
 }
 
+export type ApplicationUpdate = Partial<ApplicationCreate>
+
 export const applicationApi = {
   list: () => client.get<Application[]>('/applications'),
   get: (id: string) => client.get<Application>(`/applications/${id}`),
   create: (data: ApplicationCreate) => client.post<Application>('/applications', data),
-  update: (id: string, data: Partial<ApplicationCreate>) =>
+  update: (id: string, data: ApplicationUpdate) =>
     client.put<Application>(`/applications/${id}`, data),
   delete: (id: string) => client.delete(`/applications/${id}`),
 

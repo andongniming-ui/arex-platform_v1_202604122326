@@ -51,7 +51,8 @@ def client(tmp_path):
     # Also patch SSH executor and arex_client so tests don't block on real connections.
     with patch("main.scheduler") as mock_sched, \
          patch("api.v1.schedule.scheduler") as mock_sched2, \
-         patch("api.v1.sessions.ArexClient") as mock_arex_client:
+         patch("api.v1.sessions.ArexClient") as mock_arex_client, \
+         patch("services.session_service.ArexClient") as mock_service_arex_client:
         mock_sched.running = False
         mock_sched.add_job = MagicMock()
         mock_sched.remove_job = MagicMock()
@@ -65,6 +66,7 @@ def client(tmp_path):
         mock_arex_instance.query_recordings.return_value = {"body": {"sources": []}}
         mock_arex_instance.health_check.return_value = True
         mock_arex_client.return_value = mock_arex_instance
+        mock_service_arex_client.return_value = mock_arex_instance
 
         with TestClient(app, raise_server_exceptions=False) as c:
             yield c

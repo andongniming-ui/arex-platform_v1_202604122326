@@ -114,7 +114,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, h } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, h, watch } from 'vue'
 import {
   NCard, NSpace, NButton, NDataTable, NModal, NForm, NFormItem,
   NInput, NInputNumber, NSelect, NSwitch, NDynamicTags, NTag, NPopconfirm, NDatePicker, useMessage, useDialog,
@@ -123,11 +123,13 @@ import {
 import { scheduleApi, type Schedule } from '@/api/schedules'
 import { testCaseApi } from '@/api/testCases'
 import { applicationApi } from '@/api/applications'
+import { usePageSummary } from '@/composables/usePageSummary'
 import { fmtTime } from '@/utils/time'
 import { createDateShortcuts, inDateRange, type DateRangeValue } from '@/utils/dateRange'
 
 const message = useMessage()
 const dialog = useDialog()
+const { setPageSummary, clearPageSummary } = usePageSummary()
 const schedules = ref<Schedule[]>([])
 const loading = ref(false)
 const selectedIds = ref<string[]>([])
@@ -376,4 +378,10 @@ onMounted(async () => {
   appMap.value = Object.fromEntries(appsRes.data.map(a => [a.id, a.name]))
   await load()
 })
+
+watch(() => filteredSchedules.value.length, (count) => {
+  setPageSummary(`共 ${count} 条定时任务`)
+}, { immediate: true })
+
+onBeforeUnmount(clearPageSummary)
 </script>

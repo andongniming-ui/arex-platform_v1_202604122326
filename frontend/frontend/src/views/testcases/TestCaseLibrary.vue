@@ -114,7 +114,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, reactive, onMounted, h, watch } from 'vue'
+import { ref, computed, reactive, onMounted, onBeforeUnmount, h, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   NCard, NButton, NDataTable, NModal, NForm, NFormItem, NSelect,
@@ -122,12 +122,14 @@ import {
 } from 'naive-ui'
 import { testCaseApi, type TestCase } from '@/api/testCases'
 import { applicationApi } from '@/api/applications'
+import { usePageSummary } from '@/composables/usePageSummary'
 import { fmtTime } from '@/utils/time'
 import { createDateShortcuts, type DateRangeValue } from '@/utils/dateRange'
 
 const router = useRouter()
 const message = useMessage()
 const dialog = useDialog()
+const { setPageSummary, clearPageSummary } = usePageSummary()
 const cases = ref<TestCase[]>([])
 const loading = ref(false)
 const showCreate = ref(false)
@@ -346,4 +348,10 @@ onMounted(async () => {
   appMap.value = Object.fromEntries(res.data.map(a => [a.id, a.name]))
   await load()
 })
+
+watch(() => pagination.itemCount, (count) => {
+  setPageSummary(`共 ${count} 条用例`)
+}, { immediate: true })
+
+onBeforeUnmount(clearPageSummary)
 </script>

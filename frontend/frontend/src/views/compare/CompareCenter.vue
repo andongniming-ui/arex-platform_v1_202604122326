@@ -194,7 +194,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, h, onMounted } from 'vue'
+import { ref, reactive, computed, h, onMounted, onBeforeUnmount, watch } from 'vue'
 import {
   NCard, NSpace, NButton, NDataTable, NModal, NForm, NFormItem,
   NInput, NInputNumber, NSelect, NDynamicTags, NTag, NDescriptions,
@@ -204,11 +204,13 @@ import {
 import { compareApi, type CompareRun, type CompareResult } from '@/api/compare'
 import { applicationApi } from '@/api/applications'
 import { testCaseApi } from '@/api/testCases'
+import { usePageSummary } from '@/composables/usePageSummary'
 import { fmtTime } from '@/utils/time'
 import { createDateShortcuts, type DateRangeValue } from '@/utils/dateRange'
 
 const message = useMessage()
 const dialog = useDialog()
+const { setPageSummary, clearPageSummary } = usePageSummary()
 
 const runs = ref<CompareRun[]>([])
 const loading = ref(false)
@@ -522,4 +524,14 @@ onMounted(async () => {
     loadRuns(),
   ])
 })
+
+watch([runsTotal, resultsTotal, activeRun], ([runCount, resultCount, currentRun]) => {
+  if (currentRun) {
+    setPageSummary(`共 ${resultCount} 条对比结果`)
+    return
+  }
+  setPageSummary(`共 ${runCount} 条对比记录`)
+}, { immediate: true })
+
+onBeforeUnmount(clearPageSummary)
 </script>

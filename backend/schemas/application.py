@@ -7,17 +7,17 @@ class ApplicationCreate(BaseModel):
     name: str = Field(..., max_length=128)
     description: str | None = None
     ssh_host: str
-    ssh_port: int = 22
+    ssh_port: int = Field(default=22, ge=1, le=65535)
     ssh_user: str
     ssh_auth_type: Literal["KEY", "PASSWORD"] = "KEY"
     ssh_key_path: str | None = None
     ssh_password: str | None = None
-    sandbox_port: int = 39393
-    repeater_port: int = 8080
+    sandbox_port: int = Field(default=39393, ge=1, le=65535)
+    repeater_port: int = Field(default=8080, ge=1, le=65535)
     java_jar_name: str | None = None
     sandbox_home: str = "/root/.sandbox"
     repeater_data_dir: str = "/root/.sandbox-module/repeater-data/record"
-    sample_rate: float = 1.0
+    sample_rate: float = Field(default=1.0, ge=0.0, le=1.0)
     desensitize_rules: list[dict] | None = None
     operation_id_tags: list[str] | None = None
     xml_request_template: str | None = None
@@ -31,17 +31,17 @@ class ApplicationUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     ssh_host: str | None = None
-    ssh_port: int | None = None
+    ssh_port: int | None = Field(default=None, ge=1, le=65535)
     ssh_user: str | None = None
     ssh_auth_type: Literal["KEY", "PASSWORD"] | None = None
     ssh_key_path: str | None = None
     ssh_password: str | None = None
-    sandbox_port: int | None = None
-    repeater_port: int | None = None
+    sandbox_port: int | None = Field(default=None, ge=1, le=65535)
+    repeater_port: int | None = Field(default=None, ge=1, le=65535)
     java_jar_name: str | None = None
     sandbox_home: str | None = None
     repeater_data_dir: str | None = None
-    sample_rate: float | None = None
+    sample_rate: float | None = Field(default=None, ge=0.0, le=1.0)
     desensitize_rules: list[dict] | None = None
     operation_id_tags: list[str] | None = None
     xml_request_template: str | None = None

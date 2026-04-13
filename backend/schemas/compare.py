@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 
 
@@ -9,8 +9,8 @@ class CompareRequest(BaseModel):
     app_b_id: str
     ignore_fields: list[str] | None = None
     diff_rules: list[dict] | None = None
-    concurrency: int = 1
-    delay_ms: int = 0
+    concurrency: int = Field(default=1, ge=1, le=20)
+    delay_ms: int = Field(default=0, ge=0)
 
 
 class CompareRunOut(BaseModel):

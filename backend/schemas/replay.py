@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 
 
@@ -6,13 +6,13 @@ class ReplayJobCreate(BaseModel):
     case_id: str
     target_app_id: str
     environment: str | None = None
-    concurrency: int = 1
-    delay_ms: int = 0
+    concurrency: int = Field(default=1, ge=1, le=20)
+    delay_ms: int = Field(default=0, ge=0)
     override_host: str | None = None
     ignore_fields: list[str] | None = None   # field names to ignore in diff
     diff_rules: list[dict] | None = None       # Smart Diff Rules
     assertions: list[dict] | None = None       # Assertion Rules
-    perf_threshold_ms: int | None = None       # Flag results exceeding this latency (ms)
+    perf_threshold_ms: int | None = Field(default=None, ge=1)       # Flag results exceeding this latency (ms)
     use_sub_invocation_mocks: bool = False     # Mock downstream DB/RPC calls via Repeater agent
     webhook_url: str | None = None             # POST here when job finishes
     notify_type: str | None = None           # generic / dingtalk / wecom
@@ -20,11 +20,11 @@ class ReplayJobCreate(BaseModel):
     # P0: 智能降噪
     smart_noise_reduction: bool = False       # 启用内置智能降噪规则
     # P0: 流量放大
-    repeat_count: int = 1                     # 每条录制回放次数
+    repeat_count: int = Field(default=1, ge=1, le=100)                     # 每条录制回放次数
     # P1: 请求头转换
     header_transforms: list[dict] | None = None  # 请求头转换规则
     # P1: 失败重试
-    retry_count: int = 0                      # 失败重试次数
+    retry_count: int = Field(default=0, ge=0, le=5)                      # 失败重试次数
 
 
 class ReplayJobOut(BaseModel):

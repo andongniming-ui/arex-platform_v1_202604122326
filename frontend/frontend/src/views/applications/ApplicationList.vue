@@ -34,7 +34,7 @@
       :columns="columns"
       :data="filteredApps"
       :loading="loading"
-      :row-key="(row: any) => row.id"
+      :row-key="(row: Application) => row.id"
       :pagination="{ pageSize: 10, showSizePicker: true, pageSizes: [10, 20, 50] }"
       @update:sorter="onSorterChange"
     />
@@ -42,79 +42,11 @@
 
   <!-- Create / Edit dialog -->
   <n-modal v-model:show="showForm" preset="dialog" :title="editingId ? '编辑应用' : '注册新应用'" style="width: 760px">
-    <n-form :model="form" label-placement="left" label-width="120px">
-      <n-form-item label="应用名称" required>
-        <n-input v-model:value="form.name" placeholder="my-service" :disabled="!!editingId" />
-      </n-form-item>
-      <n-form-item label="应用说明">
-        <n-input v-model:value="form.description" placeholder="例如：PL2 录制源 / VT 缺陷环境" />
-      </n-form-item>
-      <n-form-item label="SSH Host" required>
-        <n-input v-model:value="form.ssh_host" placeholder="192.168.1.100" />
-      </n-form-item>
-      <n-form-item label="SSH User" required>
-        <n-input v-model:value="form.ssh_user" placeholder="root" />
-      </n-form-item>
-      <n-form-item label="认证方式">
-        <n-select v-model:value="form.ssh_auth_type" :options="authOptions" />
-      </n-form-item>
-      <n-form-item v-if="form.ssh_auth_type === 'KEY'" label="私钥路径">
-        <n-input v-model:value="form.ssh_key_path" placeholder="/root/.ssh/id_rsa" />
-      </n-form-item>
-      <n-form-item v-else label="SSH 密码">
-        <n-input v-model:value="form.ssh_password" type="password" />
-      </n-form-item>
-      <n-form-item label="JAR 名称">
-        <n-input v-model:value="form.java_jar_name" placeholder="my-service.jar" />
-      </n-form-item>
-      <n-form-item label="应用端口">
-        <n-input-number v-model:value="form.repeater_port" :min="1" :max="65535" />
-      </n-form-item>
-      <n-form-item label="高级配置">
-        <n-space vertical style="width: 100%">
-          <n-button tertiary size="small" @click="showAdvancedFields = !showAdvancedFields">
-            {{ showAdvancedFields ? '收起高级配置' : '展开高级配置' }}
-          </n-button>
-          <n-alert v-if="showAdvancedFields" type="info" :show-icon="false">
-            银行 / XML 场景建议配置“接口识别字段”和“默认忽略字段”。同一路径多交易码接口会按这里配置的字段识别，例如
-            <n-text code>service_id</n-text>、
-            <n-text code>trand_id</n-text>。
-          </n-alert>
-        </n-space>
-      </n-form-item>
-      <template v-if="showAdvancedFields">
-        <n-form-item label="SSH 端口">
-          <n-input-number v-model:value="form.ssh_port" :min="1" :max="65535" />
-        </n-form-item>
-        <n-form-item label="Sandbox 端口">
-          <n-input-number v-model:value="form.sandbox_port" :min="1" :max="65535" />
-        </n-form-item>
-        <n-form-item label="Sandbox 路径">
-          <n-input v-model:value="form.sandbox_home" placeholder="/root/.sandbox" />
-        </n-form-item>
-        <n-form-item label="录制数据目录">
-          <n-input v-model:value="form.repeater_data_dir" placeholder="/root/.sandbox-module/repeater-data/record" />
-        </n-form-item>
-        <n-form-item label="采样率">
-          <n-space align="center">
-            <n-input-number v-model:value="form.sample_rate_percent" :min="1" :max="100" />
-            <span>%</span>
-          </n-space>
-        </n-form-item>
-        <n-form-item label="接口识别字段">
-          <n-dynamic-tags v-model:value="form.operation_id_tags" />
-          <template #feedback>
-            留空也可用，系统会自动识别 <n-text code>service_id</n-text>、<n-text code>trand_id</n-text>、<n-text code>transCode</n-text> 等常见字段。
-          </template>
-        </n-form-item>
-        <n-form-item label="默认忽略字段">
-          <n-dynamic-tags v-model:value="form.default_ignore_fields" />
-          <template #feedback>
-            这里的字段会在发起回放时作为默认值自动带入。
-          </template>
-        </n-form-item>
-      </template>
-    </n-form>
+    <application-editor-form
+      v-model="form"
+      v-model:show-advanced="showAdvancedFields"
+      :name-disabled="!!editingId"
+    />
     <template #action>
       <n-button @click="showForm = false">取消</n-button>
       <n-button type="primary" :loading="saving" @click="handleSave">保存</n-button>
@@ -123,18 +55,26 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, h } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, h, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
-  NCard, NButton, NDataTable, NModal, NForm, NFormItem,
-  NInput, NInputNumber, NSelect, NTag, NSpace, NDatePicker, NDynamicTags, NAlert, NText, useMessage, useDialog,
+  NButton, NCard, NDataTable, NDatePicker, NInput, NModal, NSelect, NSpace, NTag, useDialog, useMessage,
 } from 'naive-ui'
 import { applicationApi, type Application } from '@/api/applications'
+import ApplicationEditorForm from '@/components/applications/ApplicationEditorForm.vue'
+import { usePageSummary } from '@/composables/usePageSummary'
 import { createDateShortcuts, inDateRange, type DateRangeValue } from '@/utils/dateRange'
+import {
+  buildApplicationPayload,
+  createApplicationEditorModel,
+  createEmptyApplicationEditorModel,
+  type ApplicationEditorModel,
+} from '@/utils/applicationEditor'
 
 const router = useRouter()
 const message = useMessage()
 const dialog = useDialog()
+const { setPageSummary, clearPageSummary } = usePageSummary()
 const apps = ref<Application[]>([])
 const loading = ref(false)
 const showForm = ref(false)
@@ -184,31 +124,7 @@ const agentStatusOptions = [
   { label: '未知', value: 'UNKNOWN' },
 ]
 
-const authOptions = [
-  { label: 'SSH Key', value: 'KEY' },
-  { label: '密码', value: 'PASSWORD' },
-]
-
-const emptyForm = () => ({
-  name: '',
-  description: '',
-  ssh_host: '',
-  ssh_port: 22,
-  ssh_user: 'root',
-  ssh_auth_type: 'KEY' as 'KEY' | 'PASSWORD',
-  ssh_key_path: '',
-  ssh_password: '',
-  java_jar_name: '',
-  sandbox_port: 39393,
-  repeater_port: 8080,
-  sandbox_home: '/root/.sandbox',
-  repeater_data_dir: '/root/.sandbox-module/repeater-data/record',
-  sample_rate_percent: 100,
-  operation_id_tags: [] as string[],
-  default_ignore_fields: [] as string[],
-})
-
-const form = ref(emptyForm())
+const form = ref<ApplicationEditorModel>(createEmptyApplicationEditorModel())
 
 const statusColor: Record<string, 'success' | 'warning' | 'error' | 'default'> = {
   ATTACHED: 'success',
@@ -261,31 +177,14 @@ function onSorterChange(sorter: { columnKey: string; order: 'ascend' | 'descend'
 
 function openCreate() {
   editingId.value = null
-  form.value = emptyForm()
+  form.value = createEmptyApplicationEditorModel()
   showAdvancedFields.value = false
   showForm.value = true
 }
 
 function openEdit(row: Application) {
   editingId.value = row.id
-  form.value = {
-    name: row.name,
-    description: row.description || '',
-    ssh_host: row.ssh_host,
-    ssh_port: row.ssh_port ?? 22,
-    ssh_user: row.ssh_user,
-    ssh_auth_type: (row.ssh_auth_type as 'KEY' | 'PASSWORD') || 'KEY',
-    ssh_key_path: row.ssh_key_path || '',
-    ssh_password: row.ssh_password || '',
-    java_jar_name: row.java_jar_name || '',
-    sandbox_port: row.sandbox_port ?? 39393,
-    repeater_port: row.repeater_port ?? 8080,
-    sandbox_home: row.sandbox_home || '/root/.sandbox',
-    repeater_data_dir: row.repeater_data_dir || '/root/.sandbox-module/repeater-data/record',
-    sample_rate_percent: Math.round((row.sample_rate ?? 1) * 100),
-    operation_id_tags: [...(row.operation_id_tags ?? [])],
-    default_ignore_fields: [...(row.default_ignore_fields ?? [])],
-  }
+  form.value = createApplicationEditorModel(row)
   showAdvancedFields.value = true
   showForm.value = true
 }
@@ -306,16 +205,7 @@ async function handleSave() {
   if (!form.value.ssh_user.trim()) { message.warning('请填写 SSH User'); return }
   saving.value = true
   try {
-    const payload: any = {
-      ...form.value,
-      sample_rate: (form.value.sample_rate_percent || 100) / 100,
-      operation_id_tags: form.value.operation_id_tags.length ? form.value.operation_id_tags : undefined,
-      default_ignore_fields: form.value.default_ignore_fields.length ? form.value.default_ignore_fields : undefined,
-    }
-    delete payload.sample_rate_percent
-    if (!payload.ssh_key_path) delete payload.ssh_key_path
-    if (!payload.ssh_password) delete payload.ssh_password
-    if (!payload.description) delete payload.description
+    const payload = buildApplicationPayload(form.value)
     if (editingId.value) {
       await applicationApi.update(editingId.value, payload)
       message.success('应用更新成功')
@@ -351,4 +241,10 @@ function handleDelete(row: Application) {
 }
 
 onMounted(loadApps)
+
+watch(() => filteredApps.value.length, (count) => {
+  setPageSummary(`共 ${count} 条应用`)
+}, { immediate: true })
+
+onBeforeUnmount(clearPageSummary)
 </script>

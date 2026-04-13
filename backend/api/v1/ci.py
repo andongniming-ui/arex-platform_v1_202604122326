@@ -19,7 +19,7 @@ from database import get_db, async_session_factory
 from models.replay import ReplayJob
 from models.test_case import TestCase
 from models.application import Application
-from api.v1.replays import _run_replay_job
+from services.replay_service import cancel_replay_job, run_replay_job as _run_replay_job
 
 router = APIRouter(prefix="/ci", tags=["ci"])
 
@@ -106,6 +106,7 @@ async def ci_replay(body: CIReplayRequest, db: AsyncSession = Depends(get_db)):
         if loop.time() >= deadline:
             timed_out = True
             task.cancel()
+            await cancel_replay_job(job_id, status="CANCELLED")
             break
 
     duration = loop.time() - start

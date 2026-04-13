@@ -40,7 +40,10 @@
     <n-layout class="app-main">
       <div class="topbar">
         <div>
-          <div class="topbar-title">{{ pageTitle }}</div>
+          <div class="topbar-title-row">
+            <div class="topbar-title">{{ pageTitle }}</div>
+            <div v-if="pageSummary.visible" class="topbar-count">{{ pageSummary.text }}</div>
+          </div>
           <div class="topbar-subtitle">面向录制回放验证、双环境差异检查和发布前回归</div>
         </div>
         <n-space align="center" size="small">
@@ -60,14 +63,16 @@
 </template>
 
 <script setup lang="ts">
-import { computed, h, ref } from 'vue'
+import { computed, h, ref, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { NButton, NLayout, NLayoutContent, NLayoutSider, NMenu, NSpace } from 'naive-ui'
 import type { MenuOption } from 'naive-ui'
+import { usePageSummary } from '@/composables/usePageSummary'
 
 const collapsed = ref(false)
 const router = useRouter()
 const route = useRoute()
+const { pageSummary, clearPageSummary } = usePageSummary()
 
 const activeKey = computed(() => {
   const p = route.path
@@ -126,6 +131,10 @@ const menuOptions: MenuOption[] = [
 function handleNav(key: string) {
   router.push('/' + key)
 }
+
+watch(() => route.path, () => {
+  clearPageSummary()
+})
 </script>
 
 <style scoped>
@@ -253,11 +262,29 @@ function handleNav(key: string) {
   padding: 24px 24px 18px;
 }
 
+.topbar-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .topbar-title {
   color: #102a43;
   font-size: 26px;
   font-weight: 800;
   letter-spacing: 0.01em;
+}
+
+.topbar-count {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  border: 1px solid rgba(16, 42, 67, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.62);
+  color: #243b53;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .topbar-subtitle {

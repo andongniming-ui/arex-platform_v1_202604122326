@@ -14,6 +14,7 @@ from models.application import Application
 from models.replay import ReplayJob
 from schemas.schedule import ScheduleCreate, ScheduleUpdate, ScheduleOut
 from core.scheduler import scheduler
+from services.replay_service import run_replay_job
 
 router = APIRouter(prefix="/schedules", tags=["schedules"])
 
@@ -60,8 +61,6 @@ def _unregister_job(schedule_id: str):
 
 async def _run_scheduled_replay(schedule_id: str):
     """Coroutine called by APScheduler when cron fires."""
-    from api.v1.replays import _run_replay_job
-
     async with async_session_factory() as db:
         s = await db.get(ScheduledReplay, schedule_id)
         if not s or not s.enabled:
@@ -101,7 +100,7 @@ async def _run_scheduled_replay(schedule_id: str):
         await db.commit()
 
     print(f"[scheduler] Running schedule '{s.name}' → job {job_id}")
-    await _run_replay_job(job_id)
+    await run_replay_job(job_id)
 
 
 # ── Load schedules on startup ─────────────────────────────────────────────────

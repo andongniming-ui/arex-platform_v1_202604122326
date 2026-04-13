@@ -127,17 +127,17 @@
       />
 
       <n-space justify="end" align="center" style="margin-top:12px">
-        <span style="font-size:13px;color:#666">共 {{ resultTotal }} 条</span>
+        <span style="font-size:13px;color:#666">共 {{ resultPagination.itemCount }} 条</span>
         <n-pagination
           v-model:page="resultPagination.page"
           v-model:page-size="resultPagination.pageSize"
           :page-sizes="resultPagination.pageSizes"
-          :item-count="resultTotal"
+          :item-count="resultPagination.itemCount"
           show-size-picker
           :show-quick-jumper="true"
           :disabled="loading"
           @update:page="loadResultsPage"
-          @update:page-size="(size) => { resultPagination.pageSize = size; resultPagination.page = 1; loadResultsPage() }"
+          @update:page-size="handleResultPageSizeChange"
         />
       </n-space>
     </n-card>
@@ -213,7 +213,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, h, computed } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount, h, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   NCard, NSpace, NStatistic, NDataTable, NSelect, NButton,
@@ -221,12 +221,15 @@ import {
   NForm, NFormItem, NCheckbox, NCheckboxGroup, useMessage,
 } from 'naive-ui'
 import { replayApi, type ReplayJob, type ReplayResult, type ResultSummary, type FailureAnalysis } from '@/api/replays'
+import { useOffsetPagination } from '@/composables/useOffsetPagination'
+import { usePageSummary } from '@/composables/usePageSummary'
 import { createDateShortcuts, type DateRangeValue } from '@/utils/dateRange'
 import { fmtTime } from '@/utils/time'
 
 const route = useRoute()
 const router = useRouter()
 const message = useMessage()
+const { setPageSummary, clearPageSummary } = usePageSummary()
 const jobId = route.params.jobId as string
 const summary = ref<ResultSummary | null>(null)
 const job = ref<ReplayJob | null>(null)
@@ -290,13 +293,12 @@ function toggleCategory(cat: string) {
   loadResults()
 }
 
-const resultTotal = ref(0)
-const resultPagination = reactive({
-  page: 1,
-  pageSize: 20,
-  showSizePicker: true,
-  pageSizes: [20, 50, 100],
-})
+const {
+  pagination: resultPagination,
+  resetPage: resetResultPage,
+  setTotal: setResultTotal,
+  updatePageSize: updateResultPageSize,
+} = useOffsetPagination({ pageSize: 20, pageSizes: [20, 50, 100] })
 
 const statusOptions = [
   { label: '通过', value: 'PASS' },
@@ -304,7 +306,11 @@ const statusOptions = [
   { label: '错误', value: 'ERROR' },
 ]
 
-const statusColor: Record<string, any> = { PASS: 'success', FAIL: 'error', ERROR: 'warning' }
+const statusColor: Record<string, 'success' | 'error' | 'warning' | 'default'> = {
+  PASS: 'success',
+  FAIL: 'error',
+  ERROR: 'warning',
+}
 const statusLabel: Record<string, string> = { PASS: '通过', FAIL: '失败', ERROR: '错误' }
 
 const failureCategoryColor: Record<string, string> = {
@@ -325,7 +331,7 @@ const columns = computed(() => [
     render: (r: ReplayResult) => {
       const tag = r.recording_entry_type || 'HTTP'
       const path = r.recording_path || r.recording_id.slice(0, 8)
-      const children: any[] = [
+      const children = [
         h('span', {
           style: 'display:inline-block;padding:0 5px;border-radius:3px;font-size:11px;font-weight:bold;margin-right:6px;background:#e8f4ff;color:#1677ff',
         }, tag),
@@ -453,7 +459,7 @@ async function openSaveDialog() {
 }
 
 async function loadResults() {
-  resultPagination.page = 1
+  resetResultPage()
   await loadResultsPage()
 }
 
@@ -505,7 +511,7 @@ async function loadResultsPage() {
       
       if (pagedIds.length === 0) {
         results.value = []
-        resultTotal.value = sorted.length
+        setResultTotal(sorted.length)
         return
       }
       
@@ -514,7 +520,7 @@ async function loadResultsPage() {
       const filteredResults = allItems.filter(r => pagedIds.includes(r.id))
       const resultMap = new Map(filteredResults.map(item => [item.id, item]))
       results.value = pagedIds.map(id => resultMap.get(id)).filter(Boolean) as ReplayResult[]
-      resultTotal.value = sorted.length
+      setResultTotal(sorted.length)
     } else {
       const res = await replayApi.results(jobId, {
         ...queryParams,
@@ -522,11 +528,16 @@ async function loadResultsPage() {
         offset: (resultPagination.page - 1) * resultPagination.pageSize,
       })
       results.value = res.data.items
-      resultTotal.value = res.data.total
+      setResultTotal(res.data.total)
     }
   } finally {
     loading.value = false
   }
+}
+
+function handleResultPageSizeChange(size: number) {
+  updateResultPageSize(size)
+  loadResultsPage()
 }
 
 async function fetchAllResults(baseParams: {
@@ -567,4 +578,10 @@ onMounted(async () => {
     analysis.value = analysisRes.data
   }
 })
+
+watch(() => resultPagination.itemCount, (count) => {
+  setPageSummary(`共 ${count} 条结果`)
+}, { immediate: true })
+
+onBeforeUnmount(clearPageSummary)
 </script>
